@@ -1,0 +1,94 @@
+# Dependencies
+node_modules/
+**/node_modules/
+.pnp
+.pnp.*
+.yarn/
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# Python Environment and Caches
+**/__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+ENV/
+env/
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+**/.mypy_cache/
+.coverage
+htmlcov/
+.tox/
+.noscript/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Celery Scheduling State
+celerybeat-schedule
+celerybeat-schedule-shm
+celerybeat-schedule-wal
+**/celerybeat-schedule*
+
+# Local Database, Backups, and File Storage
+backend/storage/
+backend/app/storage/
+backend/backups/
+storage/
+backups/
+resumes/
+screenshots/
+uploads/
+cache/
+temp/
+*.db
+*.sqlite
+*.sqlite3
+postgres-data/
+
+# Logs
+*.log
+**/test_out.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Next.js and frontend build artifacts
+.next/
+**/.next/
+out/
+build/
+dist/
+target/
+*.tsbuildinfo
+next-env.d.ts
+
+# Secrets and environment configurations
+.env
+.env.*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+!.env.example
+
+# IDEs, Editors, and OS-generated files
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*~
+.project
+.classpath
+.settings/
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
