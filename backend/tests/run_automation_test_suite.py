@@ -8,7 +8,7 @@ from typing import Dict, Any, List
 from unittest.mock import AsyncMock, MagicMock, patch
 from sqlalchemy import create_engine, text, select
 from app.config import settings
-from app.database import SessionLocal, engine as async_db_engine
+from app.database import SessionLocal, close_current_loop_engine
 from app.models.auth import User
 from app.models.profile import CandidateProfile, Preferences, Resume
 from app.models.jobs import JobPosting
@@ -790,7 +790,7 @@ class TestSuiteRunner:
                 
             finally:
                 await self.cleanup(db)
-                await async_db_engine.dispose()
+                await close_current_loop_engine()
 
         self.generate_reports()
 

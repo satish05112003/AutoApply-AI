@@ -117,15 +117,15 @@ Write-Host "[7/7] Launching dev servers..." -ForegroundColor Yellow
 
 # Backend: spawn in its own terminal window
 $BackendCmd = "cd '$BackendDir'; `$env:BACKEND_PORT=$BackendPort; `$env:FRONTEND_URL='http://localhost:$FrontendPort'; .\venv\Scripts\python start.py"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", $BackendCmd -WindowStyle Normal
+Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit", "-Command", $BackendCmd -WindowStyle Normal
 
 # Celery Worker: spawn in its own terminal window
 $WorkerCmd = "cd '$BackendDir'; .\venv\Scripts\celery -A app.celery_app.celery_app worker --loglevel=info -P solo"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", $WorkerCmd -WindowStyle Normal
+Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit", "-Command", $WorkerCmd -WindowStyle Normal
 
 # Celery Beat: spawn in its own terminal window
 $BeatCmd = "cd '$BackendDir'; .\venv\Scripts\celery -A app.celery_app.celery_app beat --loglevel=info"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", $BeatCmd -WindowStyle Normal
+Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit", "-Command", $BeatCmd -WindowStyle Normal
 
 # Give backend a moment to bind the socket
 Start-Sleep -Seconds 3
@@ -133,7 +133,7 @@ Start-Sleep -Seconds 3
 # Open browser
 Write-Host ""
 Write-Host "  Opening browser at: http://localhost:$FrontendPort" -ForegroundColor Cyan
-Start-Process "http://localhost:$FrontendPort"
+Start-Process -FilePath "http://localhost:$FrontendPort"
 
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan

@@ -26,8 +26,10 @@ export default function DashboardPage() {
     applications, 
     stats, 
     logs, 
-    sheetsStatus, 
+    sheetsStatus,
+    googleIntegration,
     agentStatus,
+    systemHealth,
     fetchApplications, 
     fetchStats, 
     initializeSheets, 
@@ -35,6 +37,9 @@ export default function DashboardPage() {
     rejectApplication, 
     updateApplicationAnswers,
     fetchAgentStatus,
+    fetchSystemHealth,
+    fetchSystemEvents,
+    fetchSheetsStatus,
     startDiscovery,
     stopDiscovery,
     startAutoApply,
@@ -42,13 +47,19 @@ export default function DashboardPage() {
     startEmailMonitoring,
     stopEmailMonitoring,
     syncSheets,
+    connectGoogleSheets,
+    disconnectGoogleSheets,
+    manualSyncGoogleSheets,
     refreshJobs,
     addLogLine 
   } = useStore();
 
-  const terminalEndRef = useRef<HTMLDivElement>(null);
+  const terminalContainerRef = useRef<HTMLDivElement>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isCrawling, setIsCrawling] = useState(false);
+  const [isConnectingGoogle, setIsConnectingGoogle] = useState(false);
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
+  const [googleCallbackMsg, setGoogleCallbackMsg] = useState<string | null>(null);
 
   // Review Queue and Details States
   const [activeReviewId, setActiveReviewId] = useState<string | null>(null);
@@ -107,18 +118,53 @@ export default function DashboardPage() {
     fetchApplications();
     fetchStats();
     fetchAgentStatus();
+    fetchSystemHealth();
+    fetchSystemEvents();
+    fetchSheetsStatus();
 
     const interval = setInterval(() => {
       fetchAgentStatus();
       fetchApplications();
-    }, 10000);
+      fetchSystemHealth();
+      fetchStats();
+      fetchSystemEvents();
+      // Poll integration status so provisioning spinner resolves automatically
+      fetchSheetsStatus();
+    }, 5000);
 
     return () => clearInterval(interval);
   }, []);
 
+  // Handle Google OAuth callback result from URL query params
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const gsParam = params.get("google_sheets");
+    if (gsParam === "connected") {
+      const email = params.get("email") || "";
+      setGoogleCallbackMsg(`Google Sheets connected${email ? ` (${email})` : ""}. Setting up your spreadsheet...`);
+      addLogLine(`[System] Google Sheets OAuth connected${email ? " for " + email : ""}. Spreadsheet provisioning in progress...`);
+      fetchSheetsStatus();
+      // Clean URL
+      const cleanUrl = window.location.pathname;
+      window.history.replaceState({}, "", cleanUrl);
+    } else if (gsParam === "denied") {
+      setGoogleCallbackMsg("Google Sheets connection was cancelled.");
+      const cleanUrl = window.location.pathname;
+      window.history.replaceState({}, "", cleanUrl);
+    } else if (gsParam === "error") {
+      const reason = params.get("reason") || "unknown";
+      setGoogleCallbackMsg(`Google Sheets connection failed: ${reason}`);
+      const cleanUrl = window.location.pathname;
+      window.history.replaceState({}, "", cleanUrl);
+    }
+  }, []);
+
   // Auto-scroll logs terminal
   useEffect(() => {
-    terminalEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (terminalContainerRef.current) {
+      terminalContainerRef.current.scrollTop = terminalContainerRef.current.scrollHeight;
+    }
   }, [logs]);
 
   const handleLinkSheets = async () => {
@@ -131,10 +177,31 @@ export default function DashboardPage() {
     }
   };
 
+  const handleConnectGoogle = async () => {
+    setIsConnectingGoogle(true);
+    addLogLine("[System] Initiating Google OAuth connection...");
+    await connectGoogleSheets();
+    // Note: if redirect works, this line never runs
+    setIsConnectingGoogle(false);
+  };
+
+  const handleDisconnectGoogle = async () => {
+    setIsDisconnecting(true);
+    const ok = await disconnectGoogleSheets();
+    setIsDisconnecting(false);
+    if (!ok) addLogLine("[System] Failed to disconnect Google Sheets.");
+  };
+
+  const handleManualSyncSheets = async () => {
+    setIsSyncing(true);
+    await manualSyncGoogleSheets();
+    setIsSyncing(false);
+  };
+
   const handleSyncSheets = async () => {
     setIsSyncing(true);
     addLogLine("[System] Starting manual Google Sheets synchronization pass...");
-    const success = await syncSheets();
+    await syncSheets();
     setIsSyncing(false);
   };
 
@@ -230,6 +297,27 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {/* Google OAuth callback notification */}
+      {googleCallbackMsg && (
+        <div className={`p-3 rounded-xl font-mono text-[10px] flex items-center justify-between border ${
+          googleCallbackMsg.includes("connected")
+            ? "bg-emerald-950/20 border-emerald-800 text-emerald-400"
+            : "bg-amber-950/20 border-amber-800 text-amber-400"
+        }`}>
+          <div className="flex items-center gap-2">
+            <FileSpreadsheet className="w-4 h-4 shrink-0" />
+            <span>{googleCallbackMsg}</span>
+          </div>
+          <button
+            onClick={() => setGoogleCallbackMsg(null)}
+            className="shrink-0 text-zinc-500 hover:text-zinc-300 transition-colors ml-4"
+          >
+            <XCircle className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
         {/* 1. Orchestrator Widget Panel */}
@@ -308,16 +396,30 @@ export default function DashboardPage() {
             {/* Daemon Control Action Buttons */}
             <div className="border-t border-zinc-900 pt-4 flex flex-wrap items-center justify-between gap-4">
               <div className="flex flex-wrap items-center gap-2">
-                <button 
-                  onClick={handleToggleDiscovery}
-                  className={`px-3 py-2 rounded-lg font-bold transition-all border font-mono text-[10px] ${
-                    agentStatus?.discovery_running 
-                      ? "bg-zinc-900 border-zinc-800 text-red-400 hover:bg-zinc-850 hover:border-red-900/50" 
-                      : "bg-emerald-600 border-emerald-500 text-white hover:bg-emerald-500"
-                  }`}
-                >
-                  {agentStatus?.discovery_running ? "Stop Discovery" : "Start Discovery"}
-                </button>
+                {(!agentStatus?.discovery_running && (systemHealth?.celery_metrics?.queue_size || 0) > 2000) ? (
+                  <div className="relative group inline-block">
+                    <button 
+                      disabled
+                      className="px-3 py-2 rounded-lg font-bold border font-mono text-[10px] bg-zinc-900 border-zinc-800 text-zinc-500 cursor-not-allowed"
+                    >
+                      Start Discovery (Blocked)
+                    </button>
+                    <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 hidden group-hover:block w-48 p-2 bg-zinc-950 border border-zinc-900 text-[9px] text-amber-400 font-mono rounded-lg shadow-xl text-center z-10 leading-normal">
+                      Discovery blocked due to queue backpressure. Pending tasks exceed 2000.
+                    </div>
+                  </div>
+                ) : (
+                  <button 
+                    onClick={handleToggleDiscovery}
+                    className={`px-3 py-2 rounded-lg font-bold transition-all border font-mono text-[10px] ${
+                      agentStatus?.discovery_running 
+                        ? "bg-zinc-900 border-zinc-800 text-red-400 hover:bg-zinc-850 hover:border-red-900/50" 
+                        : "bg-emerald-600 border-emerald-500 text-white hover:bg-emerald-500"
+                    }`}
+                  >
+                    {agentStatus?.discovery_running ? "Stop Discovery" : "Start Discovery"}
+                  </button>
+                )}
                 <button 
                   onClick={handleToggleAutoApply}
                   className={`px-3 py-2 rounded-lg font-bold transition-all border font-mono text-[10px] ${
@@ -365,45 +467,152 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* 2. Sheet status link details card */}
-        <div className="p-1.5 rounded-[1.25rem] bg-zinc-900/30 ring-1 ring-zinc-800/50 backdrop-blur-md">
-          <div className="bg-[#0b0b0f] rounded-[calc(1.25rem-0.375rem)] p-5 shadow-[inset_0_1px_1px_rgba(255,255,255,0.03)] flex flex-col justify-between h-full gap-4">
-            <div className="flex items-start gap-3.5">
-              <div className="p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 text-emerald-500 shrink-0 animate-pulse">
-                <FileSpreadsheet className="w-5 h-5" />
+        {/* Right side Stack: Sheets and System Health */}
+        <div className="flex flex-col gap-6">
+          {/* Sheets Tracker Card — Google OAuth Multi-Tenant */}
+          <div className="p-1.5 rounded-[1.25rem] bg-zinc-900/30 ring-1 ring-zinc-800/50 backdrop-blur-md">
+            <div className="bg-[#0b0b0f] rounded-[calc(1.25rem-0.375rem)] p-5 shadow-[inset_0_1px_1px_rgba(255,255,255,0.03)] flex flex-col justify-between h-full gap-4">
+              <div className="flex items-start gap-3.5">
+                <div className={`p-2.5 rounded-lg border shrink-0 ${googleIntegration.connected && googleIntegration.provisioned ? "bg-emerald-950/20 border-emerald-800/40 text-emerald-400" : "bg-zinc-900 border-zinc-800 text-zinc-500"}`}>
+                  <FileSpreadsheet className="w-5 h-5" />
+                </div>
+                <div className="space-y-1 flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-semibold text-xs text-zinc-200">Google Sheets Tracker</h3>
+                    {googleIntegration.connected && googleIntegration.provisioned && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-mono font-bold bg-emerald-950/40 text-emerald-400 border border-emerald-800/40">
+                        LIVE
+                      </span>
+                    )}
+                    {googleIntegration.connected && !googleIntegration.provisioned && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-mono font-bold bg-amber-950/40 text-amber-400 border border-amber-800/40 animate-pulse">
+                        SETUP
+                      </span>
+                    )}
+                  </div>
+                  {googleIntegration.connected ? (
+                    <div className="space-y-0.5">
+                      <p className="text-[10px] text-zinc-400 truncate">
+                        {googleIntegration.google_email || "Google account connected"}
+                      </p>
+                      {googleIntegration.last_sync_at && (
+                        <div className="text-[9px] font-mono text-zinc-500">
+                          Last sync: {new Date(googleIntegration.last_sync_at).toLocaleTimeString()}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-zinc-400 leading-relaxed">
+                      {googleIntegration.configured
+                        ? "Connect your Google account to sync applications to your personal spreadsheet."
+                        : "Google OAuth not configured. Add GOOGLE_OAUTH_CLIENT_ID to .env"}
+                    </p>
+                  )}
+                </div>
               </div>
-              <div className="space-y-1">
-                <h3 className="font-semibold text-xs text-zinc-200">Google Sheets Tracker</h3>
-                <p className="text-[10px] text-zinc-400 leading-relaxed">
-                  Automated spreadsheet synchronizer logs applications to tab categories.
-                </p>
-                {sheetsStatus.last_sync_time && (
-                  <div className="text-[9px] font-mono text-zinc-500">
-                    Last sync: {new Date(sheetsStatus.last_sync_time).toLocaleTimeString()}
+
+              {/* Action buttons */}
+              <div className="flex flex-col gap-2">
+                {!googleIntegration.connected ? (
+                  /* Disconnected — show Connect button */
+                  <button
+                    onClick={handleConnectGoogle}
+                    disabled={!googleIntegration.configured || isConnectingGoogle}
+                    className="w-full py-2 px-3 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 disabled:border-zinc-800 disabled:text-zinc-600 disabled:cursor-not-allowed text-zinc-200 font-semibold rounded-lg text-xs transition-all duration-300 font-mono flex items-center justify-center gap-2"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5" />
+                    {isConnectingGoogle ? "Redirecting to Google..." : "Connect Google Sheets"}
+                  </button>
+                ) : !googleIntegration.provisioned ? (
+                  /* Connected but spreadsheet still being set up */
+                  <div className="w-full py-2 px-3 bg-amber-950/10 border border-amber-800/30 rounded-lg text-xs font-mono text-amber-400 flex items-center gap-2">
+                    <RefreshCw className="w-3 h-3 animate-spin" />
+                    Setting up your spreadsheet...
+                  </div>
+                ) : (
+                  /* Fully connected & provisioned */
+                  <div className="flex flex-col gap-1.5">
+                    <a
+                      href={googleIntegration.spreadsheet_url || "#"}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="w-full py-2 px-3 bg-emerald-950/20 hover:bg-emerald-900/20 border border-emerald-800 text-emerald-400 font-semibold rounded-lg text-xs flex items-center justify-center gap-2 transition-all duration-300 font-mono font-bold"
+                    >
+                      <span>Open Spreadsheet</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                    <div className="flex gap-1.5">
+                      <button
+                        onClick={handleManualSyncSheets}
+                        disabled={isSyncing}
+                        className="flex-1 py-1.5 px-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-300 text-[10px] rounded-lg font-mono flex items-center justify-center gap-1 transition-all"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${isSyncing ? "animate-spin text-emerald-400" : ""}`} />
+                        Sync Now
+                      </button>
+                      <button
+                        onClick={handleDisconnectGoogle}
+                        disabled={isDisconnecting}
+                        className="flex-1 py-1.5 px-2 bg-zinc-950 hover:bg-zinc-900 border border-zinc-900 hover:border-red-900/40 text-zinc-500 hover:text-red-400 text-[10px] rounded-lg font-mono transition-all"
+                      >
+                        {isDisconnecting ? "..." : "Disconnect"}
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
             </div>
+          </div>
 
-            <div className="flex items-center gap-3">
-              {sheetsStatus.linked ? (
-                <a 
-                  href={sheetsStatus.spreadsheet_url || "#"} 
-                  target="_blank" 
-                  rel="noreferrer"
-                  className="flex-1 py-2 px-3 bg-emerald-950/20 hover:bg-emerald-900/20 border border-emerald-800 text-emerald-400 font-semibold rounded-lg text-xs flex items-center justify-center gap-2 transition-all duration-300 font-mono font-bold"
-                >
-                  <span>Open spreadsheet</span>
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </a>
-              ) : (
-                <button 
-                  onClick={handleLinkSheets}
-                  className="flex-1 py-2 px-3 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 font-semibold rounded-lg text-xs transition-all duration-300 font-mono"
-                >
-                  Connect Sheets Tracker
-                </button>
-              )}
+          {/* System Infrastructure Status Bento Card */}
+          <div className="p-1.5 rounded-[1.25rem] bg-zinc-900/30 ring-1 ring-zinc-800/50 backdrop-blur-md">
+            <div className="bg-[#0b0b0f] rounded-[calc(1.25rem-0.375rem)] p-5 shadow-[inset_0_1px_1px_rgba(255,255,255,0.03)] flex flex-col justify-between h-full gap-4">
+              <div>
+                <div className="flex items-center justify-between border-b border-zinc-900 pb-3 mb-3">
+                  <h3 className="font-semibold text-xs text-zinc-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
+                    <Activity className="w-4 h-4 text-emerald-500" />
+                    System Infrastructure
+                  </h3>
+                  <span className={`w-2 h-2 rounded-full ${
+                    systemHealth?.status === "healthy" ? "bg-emerald-500" : "bg-red-500 animate-pulse"
+                  }`} />
+                </div>
+                
+                <div className="space-y-2 font-mono text-[10px]">
+                  <div className="flex justify-between items-center">
+                    <span className="text-zinc-500">PostgreSQL DB:</span>
+                    <span className={systemHealth?.services?.postgres === "healthy" ? "text-emerald-400" : "text-red-400"}>
+                      {systemHealth?.services?.postgres === "healthy" ? "ONLINE" : "OFFLINE"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-zinc-500">Redis Broker:</span>
+                    <span className={systemHealth?.services?.redis === "healthy" ? "text-emerald-400" : "text-red-400"}>
+                      {systemHealth?.services?.redis === "healthy" ? "ONLINE" : "OFFLINE"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-zinc-500">Celery Workers:</span>
+                    <span className={systemHealth?.services?.celery === "healthy" ? "text-emerald-400" : "text-amber-400"}>
+                      {systemHealth?.services?.celery === "healthy" 
+                        ? `ONLINE (${systemHealth?.celery_metrics?.active_workers})` 
+                        : "OFFLINE"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center border-t border-zinc-900/60 pt-2 mt-2">
+                    <span className="text-zinc-500 font-bold">Pending Queue:</span>
+                    <span className={`font-bold ${
+                      (systemHealth?.celery_metrics?.queue_size || 0) > 2000 ? "text-red-400 animate-pulse" : "text-zinc-300"
+                    }`}>
+                      {systemHealth?.celery_metrics?.queue_size || 0} tasks
+                    </span>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="text-[9px] text-zinc-500 leading-normal border-t border-zinc-900 pt-2 font-mono">
+                AutoApply AI self-heals by pausing discovery if queue size &gt; 2000.
+              </div>
             </div>
           </div>
         </div>
@@ -470,14 +679,17 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className="p-5 font-mono text-[11px] text-emerald-400/90 h-56 overflow-y-auto space-y-1.5 select-text bg-[#030305] scan-line scrollbar-thin">
+          <div 
+            ref={terminalContainerRef} 
+            className="p-5 font-mono text-[11px] text-emerald-400/90 h-56 overflow-y-auto space-y-1.5 select-text bg-[#030305] scan-line scrollbar-thin"
+            style={{ scrollBehavior: 'auto' }}
+          >
             {logs.map((log, i) => (
               <div key={i} className="leading-relaxed opacity-95">
                 <span className="text-emerald-800 mr-2 font-bold select-none">&gt;&gt;</span>
                 {log}
               </div>
             ))}
-            <div ref={terminalEndRef} />
           </div>
         </div>
 

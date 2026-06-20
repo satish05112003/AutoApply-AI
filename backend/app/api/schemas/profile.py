@@ -197,9 +197,15 @@ class ResumeResponse(BaseModel):
     last_used_at: Optional[datetime] = None
     upload_at: datetime
     last_parsed_at: Optional[datetime] = None
-
     class Config:
         from_attributes = True
+
+class ResumeUploadResponse(BaseModel):
+    success: bool
+    resume_uploaded: bool
+    analysis_status: str
+    warning: Optional[str] = None
+    resume: Optional[ResumeResponse] = None
 
 # --- Update Schemas (Optional Fields) ---
 class EducationUpdate(BaseModel):

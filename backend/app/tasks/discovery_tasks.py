@@ -7,6 +7,7 @@ from app.database import SessionLocal
 from app.crawlers.registry import crawler_registry
 from app.services.job_service import JobService
 from app.models.jobs import JobDiscoveryLog
+from app.redis_client import redis_client
 
 logger = logging.getLogger("autoapply_ai.tasks.discovery")
 
@@ -99,6 +100,13 @@ async def _async_run_job_discovery(source_name: str, query: str, location: Optio
         f"Starting Celery discovery task: source={source_name}, query={query} "
         f"task={task_id} worker={worker_id} loop={id(loop)}"
     )
+    
+    from app.redis_client import redis_client
+    queue_size = redis_client.get_celery_queue_size()
+    if queue_size > 2000:
+        msg = f"Job discovery skipped due to queue backpressure: queue size={queue_size} > 2000."
+        logger.warning(msg)
+        return msg
     
     try:
         crawler = crawler_registry.get_crawler(source_name)
@@ -272,7 +280,7 @@ async def _async_scheduled_discover_jobs() -> str:
     
     from app.models.auth import User
     from app.models.profile import Preferences
-    from sqlalchemy import select
+    from sqlalchemy import select, update
     
     try:
         async with SessionLocal() as db:
@@ -282,15 +290,67 @@ async def _async_scheduled_discover_jobs() -> str:
                 f"action=scheduled_discover_jobs"
             )
             try:
+                # Check current queue size
+                queue_size = redis_client.get_celery_queue_size()
+                logger.info(f"scheduled_discover_jobs: Current Celery queue size is {queue_size}")
+
+                if queue_size > 2000:
+                    # Disable discovery automatically
+                    redis_client.set_value("system:discovery_disabled_auto", "true")
+                    
+                    # Fetch active users to save for auto-recovery
+                    stmt_active = select(User.id).where(User.agent_enabled == True)
+                    res_active = await db.execute(stmt_active)
+                    active_ids = [str(uid) for uid in res_active.scalars().all()]
+                    
+                    if active_ids:
+                        redis_client.set_value("system:auto_disabled_users", active_ids)
+                        
+                        # Disable in PostgreSQL for all users
+                        await db.execute(
+                            update(User).where(User.agent_enabled == True).values(agent_enabled=False)
+                        )
+                        await db.commit()
+                    
+                    msg = f"Queue size ({queue_size}) exceeds 2000 limit. Automatically disabled discovery for {len(active_ids)} active users."
+                    logger.critical(msg)
+                    return msg
+
+                if queue_size > 1000:
+                    msg = f"Queue size ({queue_size}) exceeds 1000 limit. Pausing discovery daemon."
+                    logger.warning(msg)
+                    return msg
+
+                if queue_size < 500:
+                    # Clear auto-disable flag
+                    redis_client.set_value("system:discovery_disabled_auto", "false")
+                    
+                    # Auto-recovery: re-enable users who were disabled by backpressure
+                    disabled_ids = redis_client.get_value("system:auto_disabled_users", is_json=True)
+                    if disabled_ids:
+                        from uuid import UUID
+                        user_uuids = [UUID(uid) for uid in disabled_ids]
+                        await db.execute(
+                            update(User).where(User.id.in_(user_uuids)).values(agent_enabled=True)
+                        )
+                        await db.commit()
+                        redis_client.delete_key("system:auto_disabled_users")
+                        logger.info(f"Self-healed: Automatically re-enabled {len(disabled_ids)} users as queue size {queue_size} < 500.")
+
                 stmt = select(User).where(User.agent_enabled == True)
                 res = await db.execute(stmt)
                 users = res.scalars().all()
                 
                 if not users:
                     logger.info("scheduled_discover_jobs: No active candidates found. Enqueuing default query.")
-                    run_job_discovery.delay("linkedin", "AI Engineer", "Remote")
+                    redis_key = "last_crawl:linkedin:AI Engineer:Remote"
+                    if not redis_client.get_value(redis_key):
+                        run_job_discovery.delay("linkedin", "AI Engineer", "Remote")
+                        redis_client.set_value(redis_key, "true", expire_seconds=14400)
+                        msg = "No active users. Queued default system crawl."
+                    else:
+                        msg = "No active users. Default system crawl rate limited."
                     elapsed = time.time() - t0
-                    msg = "No active users. Queued default system crawl."
                     logger.info(
                         f"CeleryTaskFinished: task={task_id} worker={worker_id} loop={id(loop)} session={id(db)} tx={tx_id} "
                         f"action=scheduled_discover_jobs status=SUCCESS duration={elapsed:.2f}s details={msg}"
@@ -298,8 +358,9 @@ async def _async_scheduled_discover_jobs() -> str:
                     return msg
                     
                 queued_count = 0
-                sources = ["linkedin", "wellfound", "ashby", "greenhouse", "lever"]
                 
+                # Deduplicate discovery crawls across all active candidates
+                unique_crawls = set()
                 for user in users:
                     stmt_pref = select(Preferences).where(Preferences.user_id == user.id)
                     res_pref = await db.execute(stmt_pref)
@@ -308,11 +369,26 @@ async def _async_scheduled_discover_jobs() -> str:
                     roles = prefs.preferred_roles if (prefs and prefs.preferred_roles) else ["AI Engineer", "Software Engineer"]
                     locations = prefs.preferred_locations if (prefs and prefs.preferred_locations) else ["Remote"]
                     
-                    for source in sources:
+                    # Determine preferred sources, default to all available including naukri
+                    pref_sources = prefs.preferred_sources if (prefs and prefs.preferred_sources) else ["linkedin", "naukri", "wellfound", "ashby", "greenhouse", "lever"]
+                    clean_sources = [s.lower().strip() for s in pref_sources if s.lower().strip() in ["linkedin", "naukri", "wellfound", "ashby", "greenhouse", "lever"]]
+                    if not clean_sources:
+                        clean_sources = ["linkedin", "naukri", "wellfound", "ashby", "greenhouse", "lever"]
+
+                    for source in clean_sources:
                         for role in roles:
                             for loc in locations:
-                                run_job_discovery.delay(source, role, loc)
-                                queued_count += 1
+                                unique_crawls.add((source, role, loc))
+                
+                for source, role, loc in unique_crawls:
+                    redis_key = f"last_crawl:{source}:{role}:{loc}"
+                    if redis_client.get_value(redis_key):
+                        logger.info(f"Skipping crawl for {source}:{role}:{loc} - already crawled recently.")
+                        continue
+                    
+                    run_job_discovery.delay(source, role, loc)
+                    redis_client.set_value(redis_key, "true", expire_seconds=14400)
+                    queued_count += 1
                                 
                 elapsed = time.time() - t0
                 summary_msg = f"Enqueued {queued_count} discovery crawls for {len(users)} active candidates."

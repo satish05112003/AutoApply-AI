@@ -1,7 +1,10 @@
 import os
+import time
 from typing import Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+START_TIME = time.time()
 
 class Settings(BaseSettings):
     # Database Settings
@@ -47,10 +50,18 @@ class Settings(BaseSettings):
     BROWSER_POOL_SIZE: int = Field(default=3)
     BROWSER_TIMEOUT_MS: int = Field(default=30000)
 
-    # Google Sheets Settings
+    # Google OAuth2 Settings (Multi-Tenant — one spreadsheet per user)
+    GOOGLE_OAUTH_CLIENT_ID: Optional[str] = Field(default=None)
+    GOOGLE_OAUTH_CLIENT_SECRET: Optional[str] = Field(default=None)
+    GOOGLE_OAUTH_REDIRECT_URI: str = Field(default="http://localhost:8000/api/v1/integrations/google/callback")
+    GOOGLE_OAUTH_SCOPES: str = Field(
+        default="https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file openid email"
+    )
+    # Legacy service account (deprecated — kept for backward compat only)
     GOOGLE_SERVICE_ACCOUNT_JSON: str = Field(default="{}")
     SHEETS_BATCH_SIZE: int = Field(default=50)
     SHEETS_BATCH_FLUSH_INTERVAL_SECONDS: int = Field(default=30)
+
 
     # Notifications Settings
     SMTP_HOST: str = Field(default="localhost")

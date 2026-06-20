@@ -2,6 +2,30 @@ import asyncio
 import os
 import weakref
 from collections.abc import AsyncGenerator
+import sqlalchemy
+from datetime import datetime, timezone
+
+_OriginalDateTime = sqlalchemy.DateTime
+
+class UTCDateTime(sqlalchemy.types.TypeDecorator):
+    impl = _OriginalDateTime
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if isinstance(value, datetime) and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+    def process_result_value(self, value, dialect):
+        if isinstance(value, datetime) and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+# Apply patch globally before any models are imported
+sqlalchemy.DateTime = UTCDateTime
+sqlalchemy.types.DateTime = UTCDateTime
+sqlalchemy.sql.sqltypes.DateTime = UTCDateTime
+
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -25,6 +49,7 @@ def get_engine():
                 settings.DATABASE_URL,
                 poolclass=NullPool,
                 echo=False,
+                connect_args={"server_settings": {"timezone": "utc"}},
             )
         return _default_engine
 
@@ -39,7 +64,8 @@ def get_engine():
                 pool_recycle=1800,
                 pool_size=20,
                 max_overflow=40,
-                echo=False
+                echo=False,
+                connect_args={"server_settings": {"timezone": "utc"}},
             )
         return _default_engine
 
@@ -50,7 +76,8 @@ def get_engine():
             pool_recycle=1800,
             pool_size=20,
             max_overflow=40,
-            echo=False
+            echo=False,
+            connect_args={"server_settings": {"timezone": "utc"}},
         )
         _engines[loop] = engine
         

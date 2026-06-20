@@ -102,77 +102,84 @@ class ResumeAgent(BaseAgent):
             )
             
             prompt = f"Resume text to parse:\n\n{raw_text}"
-            await self.log_info("Sending parsed text to LLM parser...")
-            # self.think() always returns a str — LLM router handles fallback internally
-            llm_response = await self.think(
-                prompt,
-                system_prompt,
-                model=settings.OLLAMA_DEFAULT_MODEL,
-                response_model=ResumeStructure
-            )
+            analysis_status = "success"
+            warning = None
 
-            # Strip LLM code fence markers if present
-            clean_json = llm_response.strip().replace("```json", "").replace("```", "").strip()
-            await self.log_info(f"LLM response length: {len(clean_json)} chars")
             try:
+                # self.think() always returns a str — LLM router handles fallback internally
+                llm_response = await self.think(
+                    prompt,
+                    system_prompt,
+                    model=settings.OLLAMA_DEFAULT_MODEL,
+                    response_model=ResumeStructure
+                )
+
+                # Strip LLM code fence markers if present
+                clean_json = llm_response.strip().replace("```json", "").replace("```", "").strip()
+                await self.log_info(f"LLM response length: {len(clean_json)} chars")
                 parsed_data = json.loads(clean_json)
-            except json.JSONDecodeError as json_err:
-                raise ValueError(f"LLM returned invalid JSON: {json_err}. Raw response (first 200 chars): {clean_json[:200]}")
 
-            # ── Hybrid Extraction Merging ────────────────────────────────────
-            deterministic_data = parse_resume_deterministic(raw_text)
-            
-            merged_data = {}
-            def is_empty_val(v):
-                if v is None:
-                    return True
-                if isinstance(v, str) and (v.strip() == "" or v.strip().upper() in ["N/A", "NONE", "NULL"]):
-                    return True
-                if isinstance(v, list) and len(v) == 0:
-                    return True
-                return False
-
-            # Merge scalars (full_name, email, phone, summary, linkedin_url, github_url, resume_type)
-            for key in ["full_name", "email", "phone", "summary", "linkedin_url", "github_url", "resume_type"]:
-                llm_val = parsed_data.get(key)
-                det_val = deterministic_data.get(key)
-                if is_empty_val(llm_val) and not is_empty_val(det_val):
-                    merged_data[key] = det_val
-                else:
-                    merged_data[key] = llm_val if llm_val is not None else det_val
-
-            # Merge arrays (skills, education, experience, projects, achievements)
-            for key in ["skills", "education", "experience", "projects", "achievements"]:
-                llm_val = parsed_data.get(key, [])
-                det_val = deterministic_data.get(key, [])
+                # ── Hybrid Extraction Merging ────────────────────────────────────
+                deterministic_data = parse_resume_deterministic(raw_text)
                 
-                llm_empty = False
-                if not llm_val:
-                    llm_empty = True
-                elif isinstance(llm_val, list):
-                    if all(isinstance(x, str) and is_empty_val(x) for x in llm_val):
+                merged_data = {}
+                def is_empty_val(v):
+                    if v is None:
+                        return True
+                    if isinstance(v, str) and (v.strip() == "" or v.strip().upper() in ["N/A", "NONE", "NULL"]):
+                        return True
+                    if isinstance(v, list) and len(v) == 0:
+                        return True
+                    return False
+
+                # Merge scalars (full_name, email, phone, summary, linkedin_url, github_url, resume_type)
+                for key in ["full_name", "email", "phone", "summary", "linkedin_url", "github_url", "resume_type"]:
+                    llm_val = parsed_data.get(key)
+                    det_val = deterministic_data.get(key)
+                    if is_empty_val(llm_val) and not is_empty_val(det_val):
+                        merged_data[key] = det_val
+                    else:
+                        merged_data[key] = llm_val if llm_val is not None else det_val
+
+                # Merge arrays (skills, education, experience, projects, achievements)
+                for key in ["skills", "education", "experience", "projects", "achievements"]:
+                    llm_val = parsed_data.get(key, [])
+                    det_val = deterministic_data.get(key, [])
+                    
+                    llm_empty = False
+                    if not llm_val:
                         llm_empty = True
-                    elif all(isinstance(x, dict) and all(is_empty_val(val) for val in x.values()) for x in llm_val):
-                        llm_empty = True
+                    elif isinstance(llm_val, list):
+                        if all(isinstance(x, str) and is_empty_val(x) for x in llm_val):
+                            llm_empty = True
+                        elif all(isinstance(x, dict) and all(is_empty_val(val) for val in x.values()) for x in llm_val):
+                            llm_empty = True
+                    
+                    if llm_empty and det_val:
+                        merged_data[key] = det_val
+                    else:
+                        merged_data[key] = llm_val
                 
-                if llm_empty and det_val:
-                    merged_data[key] = det_val
-                else:
-                    merged_data[key] = llm_val
-            
-            # Recompute summary and resume_type strictly from the merged fields of the current resume
-            from app.utils.resume_parser import generate_professional_summary, detect_resume_type
-            merged_data["summary"] = generate_professional_summary(
-                merged_data.get("skills", []),
-                merged_data.get("experience", []),
-                merged_data.get("projects", [])
-            )
-            merged_data["resume_type"] = detect_resume_type(
-                merged_data.get("skills", []),
-                merged_data.get("projects", [])
-            )
-            
-            parsed_data = merged_data
+                # Recompute summary and resume_type strictly from the merged fields of the current resume
+                from app.utils.resume_parser import generate_professional_summary, detect_resume_type
+                merged_data["summary"] = generate_professional_summary(
+                    merged_data.get("skills", []),
+                    merged_data.get("experience", []),
+                    merged_data.get("projects", [])
+                )
+                merged_data["resume_type"] = detect_resume_type(
+                    merged_data.get("skills", []),
+                    merged_data.get("projects", [])
+                )
+                
+                parsed_data = merged_data
+
+            except Exception as e:
+                analysis_status = "failed"
+                warning = "AI analysis temporarily unavailable. Resume stored successfully."
+                await self.log_info(f"AI parsing failed, falling back to rule-based parser. Detail: {e}")
+                logger.warning(f"AI parsing failed, falling back to rule-based parser: {e}", exc_info=True)
+                parsed_data = parse_resume_deterministic(raw_text)
 
             # ── Debug Logging ────────────────────────────────────────────────
             print("RAW_TEXT_START")
@@ -245,7 +252,15 @@ class ResumeAgent(BaseAgent):
             await self.emit_event("RESUME_PARSED", {"resume_id": str(resume_db_id), "type": parsed_data.get("resume_type")})
             await self.log_info("Resume parsed and synced successfully.")
             
-            result = AgentResult(success=True, output_data={"resume_id": str(resume_db_id), "type": parsed_data.get("resume_type")})
+            result = AgentResult(
+                success=True,
+                output_data={
+                    "resume_id": str(resume_db_id),
+                    "type": parsed_data.get("resume_type"),
+                    "analysis_status": analysis_status,
+                    "warning": warning
+                }
+            )
             await self.finalize_run(result)
             return result
 

@@ -135,8 +135,9 @@ def main():
         logger.warning(f"Frontend env sync skipped: {e}")
         
     # Start FastAPI / Uvicorn server programmatically
-    # Disable reload in docker/production context
-    reload_mode = not is_docker and os.environ.get("BACKEND_RELOAD", "true").lower() == "true"
+    # Disable reload in docker/production context or when BACKEND_RELOAD=false
+    reload_env = os.environ.get("BACKEND_RELOAD", "false").lower()
+    reload_mode = not is_docker and reload_env == "true"
     
     uvicorn.run(
         "app.main:app",

@@ -21,14 +21,7 @@ async def list_notifications(user: User = Depends(get_current_user), db: AsyncSe
 @router.post("/mark-read")
 async def mark_notifications_read(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Mark all unread notifications for the user as read."""
-    await db.execute(
-        update(Notification)
-        .where(Notification.user_id == user.id, Notification.is_read == False)
-        .values(is_read=True, read_at=datetime.utcnow())
-    )
-    # Import datetime inside function to avoid namespace pollution
     from datetime import datetime
-    
     await db.execute(
         update(Notification)
         .where(Notification.user_id == user.id, Notification.is_read == False)
@@ -36,6 +29,25 @@ async def mark_notifications_read(user: User = Depends(get_current_user), db: As
     )
     await db.commit()
     return {"message": "All notifications marked as read."}
+
+@router.post("/{id}/read")
+async def mark_single_notification_read(id: UUID, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Mark a specific notification as read."""
+    from datetime import datetime
+    stmt = select(Notification).where(Notification.id == id, Notification.user_id == user.id)
+    result = await db.execute(stmt)
+    notif = result.scalars().first()
+    if not notif:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Notification not found."
+        )
+    notif.is_read = True
+    notif.read_at = datetime.utcnow()
+    db.add(notif)
+    await db.commit()
+    return {"message": "Notification marked as read."}
+
 
 @router.delete("/{id}")
 async def delete_notification(id: UUID, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):

@@ -1,94 +1,86 @@
-# Dependencies
-node_modules/
-**/node_modules/
-.pnp
-.pnp.*
-.yarn/
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
+# Environment
+.env
+.env.*
+backend/.env
+frontend/.env
+frontend/.env.local
 
-# Python Environment and Caches
-**/__pycache__/
-*.py[cod]
-*$py.class
+# OAuth / Google
+credentials.json
+client_secret*.json
+token.json
+
+# Python
 venv/
 .venv/
-ENV/
-env/
-.pytest_cache/
-**/.pytest_cache/
-.mypy_cache/
-**/.mypy_cache/
-.coverage
-htmlcov/
-.tox/
-.noscript/
-pip-log.txt
-pip-delete-this-directory.txt
+__pycache__/
+*.pyc
 
-# Celery Scheduling State
-celerybeat-schedule
-celerybeat-schedule-shm
-celerybeat-schedule-wal
-**/celerybeat-schedule*
+# Node
+node_modules/
+.next/
+out/
 
-# Local Database, Backups, and File Storage
-backend/storage/
-backend/app/storage/
-backend/backups/
-storage/
-backups/
-resumes/
-screenshots/
-uploads/
-cache/
-temp/
+# Logs
+logs/
+*.log
+
+# Database
 *.db
 *.sqlite
 *.sqlite3
-postgres-data/
 
-# Logs
-*.log
-**/test_out.log
-npm-debug.log*
-yarn-debug.log*
-pnpm-debug.log*
+# Uploads
+uploads/
+storage/
 
-# Next.js and frontend build artifacts
-.next/
-**/.next/
-out/
-build/
-dist/
-target/
-*.tsbuildinfo
-next-env.d.ts
-
-# Secrets and environment configurations
-.env
-.env.*
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-!.env.example
-
-# IDEs, Editors, and OS-generated files
-.idea/
+# IDE
 .vscode/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.swp
-*~
-.project
-.classpath
-.settings/
+.idea/
+
+# OS
 .DS_Store
 Thumbs.db
-Desktop.ini
-ehthumbs.db
+
+# Testing
+playwright-report/
+test-results/
+
+# Screenshots
+screenshots/
+artifacts/
+
+# Local backups
+*.bak
+*.backup
+
+# Runtime files
+logs/
+pids/
+
+# Celery
+backend/celerybeat-schedule*
+celerybeat-schedule*
+
+# Backups
+backend/backups/
+
+# Environment files
+.env
+.env.local
+.env.production
+backend/.env
+
+# OAuth / Google credentials
+credentials.json
+client_secret*.json
+token.json
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+

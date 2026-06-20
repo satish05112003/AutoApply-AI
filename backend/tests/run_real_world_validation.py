@@ -10,7 +10,7 @@ from sqlalchemy import text, select
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
-from app.database import SessionLocal, engine as async_db_engine
+from app.database import SessionLocal, close_current_loop_engine
 from app.models.auth import User
 from app.models.profile import CandidateProfile, Preferences, Resume, Skill
 from app.models.jobs import JobPosting
@@ -605,7 +605,7 @@ class RealWorldValidationRunner:
 
             finally:
                 await self.cleanup(db)
-                await async_db_engine.dispose()
+                await close_current_loop_engine()
 
         self.generate_report()
 

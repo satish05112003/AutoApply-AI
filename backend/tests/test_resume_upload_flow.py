@@ -91,7 +91,11 @@ def test_resume_upload_flow_no_missing_greenlet():
         )
         assert upload_res.status_code == 200, f"Upload and parse failed: {upload_res.text}"
         
-        resume_data = upload_res.json()
+        res_data = upload_res.json()
+        assert res_data["success"] is True
+        assert res_data["resume_uploaded"] is True
+        
+        resume_data = res_data["resume"]
         assert resume_data["resume_name"] == "Charlie Resume"
         assert resume_data["is_primary"] is True
         assert resume_data["original_filename"] == "charlie_resume.pdf"

@@ -147,10 +147,7 @@ class GreenhouseCrawler(BaseCrawler):
 
                 matches.append({
                     "external_id": str(job.get("id")),
-                    "source_url": job.get(
-                        "absolute_url",
-                        f"https://boards.greenhouse.io/{company}/jobs/{job.get('id')}",
-                    ),
+                    "source_url": f"https://boards.greenhouse.io/{company}/jobs/{job.get('id')}",
                     "company_name": board_company,
                     "role_title": title,
                     "location": location_name or "Remote",

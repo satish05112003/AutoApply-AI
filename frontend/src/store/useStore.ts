@@ -14,11 +14,21 @@ interface AppState {
     status_distribution: Record<string, number>;
   };
   logs: string[];
+  notifications: any[];
   sheetsStatus: {
     linked: boolean;
     spreadsheet_url: string | null;
     spreadsheet_id: string | null;
     last_sync_time: string | null;
+  };
+  googleIntegration: {
+    connected: boolean;
+    provisioned: boolean;
+    google_email: string | null;
+    spreadsheet_id: string | null;
+    spreadsheet_url: string | null;
+    last_sync_at: string | null;
+    configured: boolean;
   };
   agentStatus: {
     discovery_running: boolean;
@@ -26,6 +36,23 @@ interface AppState {
     email_monitoring_running: boolean;
     agent_mode: string;
     agent_enabled: boolean;
+  } | null;
+  systemHealth: {
+    status: string;
+    services: {
+      postgres: string;
+      redis: string;
+      celery: string;
+      qdrant: string;
+    };
+    celery_metrics: {
+      active_workers: number;
+      queue_size: number;
+    };
+    candidate_stats: {
+      active_applications: number;
+      submitted_today: number;
+    };
   } | null;
   
   // Actions
@@ -42,6 +69,8 @@ interface AppState {
   fetchSheetsStatus: () => Promise<void>;
   initializeSheets: () => Promise<boolean>;
   fetchAgentStatus: () => Promise<void>;
+  fetchSystemHealth: () => Promise<void>;
+  fetchSystemEvents: () => Promise<void>;
   startDiscovery: () => Promise<boolean>;
   stopDiscovery: () => Promise<boolean>;
   startAutoApply: () => Promise<boolean>;
@@ -49,7 +78,17 @@ interface AppState {
   startEmailMonitoring: () => Promise<boolean>;
   stopEmailMonitoring: () => Promise<boolean>;
   syncSheets: () => Promise<boolean>;
+  fetchGoogleIntegrationStatus: () => Promise<void>;
+  connectGoogleSheets: () => Promise<void>;
+  disconnectGoogleSheets: () => Promise<boolean>;
+  manualSyncGoogleSheets: () => Promise<boolean>;
   refreshJobs: () => Promise<boolean>;
+  fetchNotifications: () => Promise<void>;
+  markNotificationRead: (id: string) => Promise<boolean>;
+  markAllNotificationsRead: () => Promise<boolean>;
+  retryApplication: (id: string) => Promise<boolean>;
+  updateApplicationStatus: (id: string, status: string) => Promise<boolean>;
+  purgeQueues: () => Promise<boolean>;
   addLogLine: (message: string) => void;
   clearLogs: () => void;
 }
@@ -76,7 +115,18 @@ export const useStore = create<AppState>((set, get) => ({
     spreadsheet_id: null,
     last_sync_time: null
   },
+  googleIntegration: {
+    connected: false,
+    provisioned: false,
+    google_email: null,
+    spreadsheet_id: null,
+    spreadsheet_url: null,
+    last_sync_at: null,
+    configured: false,
+  },
   agentStatus: null,
+  systemHealth: null,
+  notifications: [],
 
   setToken: (token) => {
     if (token) localStorage.setItem("token", token);
@@ -257,12 +307,22 @@ export const useStore = create<AppState>((set, get) => ({
     const token = get().token;
     if (!token) return;
     try {
-      const res = await fetch(`${API_BASE}/sheets/status`, {
+      // Prefer new OAuth integration status endpoint
+      const res = await fetch(`${API_BASE}/integrations/google/status`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       if (res.status === 200) {
         const data = await res.json();
-        set({ sheetsStatus: data });
+        set({
+          googleIntegration: data,
+          // Keep legacy sheetsStatus compatible with old UI parts
+          sheetsStatus: {
+            linked: data.connected && data.provisioned,
+            spreadsheet_url: data.spreadsheet_url,
+            spreadsheet_id: data.spreadsheet_id,
+            last_sync_time: data.last_sync_at,
+          }
+        });
       }
     } catch (e) {
       console.error(e);
@@ -272,12 +332,83 @@ export const useStore = create<AppState>((set, get) => ({
   initializeSheets: async () => {
     const token = get().token;
     if (!token) return false;
+    // Legacy: try old endpoint for backward compat
     try {
       const res = await fetch(`${API_BASE}/sheets/initialize`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${token}` }
       });
       if (res.status === 200) {
+        await get().fetchSheetsStatus();
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  },
+
+  fetchGoogleIntegrationStatus: async () => {
+    await get().fetchSheetsStatus();
+  },
+
+  connectGoogleSheets: async () => {
+    const token = get().token;
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_BASE}/integrations/google/connect`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.status === 200) {
+        const data = await res.json();
+        if (data.authorization_url) {
+          window.location.href = data.authorization_url;
+        }
+      } else {
+        console.error("Failed to get Google OAuth URL", await res.text());
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  },
+
+  disconnectGoogleSheets: async () => {
+    const token = get().token;
+    if (!token) return false;
+    try {
+      const res = await fetch(`${API_BASE}/integrations/google/disconnect`, {
+        method: "DELETE",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.status === 200) {
+        set({
+          googleIntegration: {
+            connected: false, provisioned: false, google_email: null,
+            spreadsheet_id: null, spreadsheet_url: null, last_sync_at: null, configured: true
+          },
+          sheetsStatus: { linked: false, spreadsheet_url: null, spreadsheet_id: null, last_sync_time: null }
+        });
+        get().addLogLine("[User] Disconnected Google Sheets integration.");
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  },
+
+  manualSyncGoogleSheets: async () => {
+    const token = get().token;
+    if (!token) return false;
+    try {
+      const res = await fetch(`${API_BASE}/integrations/google/sync`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.status === 200) {
+        get().addLogLine("[User] Google Sheets sync enqueued.");
         await get().fetchSheetsStatus();
         return true;
       }
@@ -298,6 +429,42 @@ export const useStore = create<AppState>((set, get) => ({
       if (res.status === 200) {
         const data = await res.json();
         set({ agentStatus: data });
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  },
+
+  fetchSystemHealth: async () => {
+    const token = get().token;
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_BASE}/system/health`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.status === 200) {
+        const data = await res.json();
+        set({ systemHealth: data });
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  },
+
+  fetchSystemEvents: async () => {
+    const token = get().token;
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_BASE}/system/events`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.status === 200) {
+        const events = await res.json();
+        const formattedLogs = events.map((ev: any) => {
+          const time = new Date(ev.timestamp).toLocaleTimeString();
+          return `[${time}] ${ev.message}`;
+        });
+        set({ logs: formattedLogs });
       }
     } catch (e) {
       console.error(e);
@@ -458,6 +625,124 @@ export const useStore = create<AppState>((set, get) => ({
       });
       if (res.status === 200) {
         get().addLogLine("[User] Job discovery crawl refresh triggered.");
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  },
+
+  fetchNotifications: async () => {
+    const token = get().token;
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_BASE}/notifications`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.status === 200) {
+        const notifications = await res.json();
+        set({ notifications });
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  },
+
+  markNotificationRead: async (id) => {
+    const token = get().token;
+    if (!token) return false;
+    try {
+      const res = await fetch(`${API_BASE}/notifications/${id}/read`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.status === 200) {
+        await get().fetchNotifications();
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  },
+
+  markAllNotificationsRead: async () => {
+    const token = get().token;
+    if (!token) return false;
+    try {
+      const res = await fetch(`${API_BASE}/notifications/mark-read`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.status === 200) {
+        await get().fetchNotifications();
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  },
+
+  retryApplication: async (id) => {
+    const token = get().token;
+    if (!token) return false;
+    try {
+      const res = await fetch(`${API_BASE}/applications/${id}/retry`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.status === 200) {
+        await get().fetchApplications();
+        get().addLogLine(`[User] Initiated manual submission retry for app ID: ${id}`);
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  },
+
+  updateApplicationStatus: async (id, status) => {
+    const token = get().token;
+    if (!token) return false;
+    try {
+      const res = await fetch(`${API_BASE}/applications/${id}/status`, {
+        method: "PUT",
+        headers: { 
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ status })
+      });
+      if (res.status === 200) {
+        await get().fetchApplications();
+        get().addLogLine(`[User] Transitioned application ID ${id} to status: ${status}`);
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  },
+
+  purgeQueues: async () => {
+    const token = get().token;
+    if (!token) return false;
+    try {
+      const res = await fetch(`${API_BASE}/system/queues/purge`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.status === 200) {
+        get().addLogLine("[User] Purged background Celery queues.");
+        await get().fetchSystemHealth();
         return true;
       }
       return false;

@@ -11,7 +11,7 @@ from app.models.profile import Preferences, Resume
 from app.models.auth import User
 from app.browser.form_handler import FormHandler
 from app.agents.application_agent import ApplicationAgent
-from app.database import engine as async_db_engine
+from app.database import close_current_loop_engine
 
 def _sync_cleanup(user_uuid: str, job_id: str = None) -> None:
     sync_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
@@ -74,7 +74,7 @@ async def run_with_engine_cleanup(coro):
     try:
         return await coro
     finally:
-        await async_db_engine.dispose()
+        await close_current_loop_engine()
 
 @pytest.mark.anyio
 async def test_form_detector_radio_grouping():

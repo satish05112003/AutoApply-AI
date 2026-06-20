@@ -108,6 +108,18 @@ class AgentOrchestrator:
         app_res = await self.db.execute(app_stmt)
         app = app_res.scalars().first()
         
+        if not app:
+            from app.redis_client import redis_client
+            queue_size = redis_client.get_celery_queue_size()
+            if queue_size > 1000:
+                logger.warning(f"Backpressure active: queue size={queue_size} exceeds 1000 limit. Rejecting new application generation.")
+                return {
+                    "status": "backpressure_blocked",
+                    "message": f"Queue size is too high ({queue_size} > 1000). Stopping application generation.",
+                    "score": score,
+                    "decision": decision
+                }
+        
         if user_agent_mode == "FULL_AUTO" and decision == "APPLY":
             app_status = "SHORTLISTED"
         else:
@@ -127,6 +139,27 @@ class AgentOrchestrator:
             self.db.add(app)
             await self.db.commit()
             await self.db.refresh(app)
+            
+            try:
+                from app.models.applications import ApplicationEvent
+                event = ApplicationEvent(
+                    application_id=app.id,
+                    user_id=app.user_id,
+                    event_type="MATCH_DECIDED",
+                    old_status=None,
+                    new_status=app_status,
+                    details={
+                        "match_score": float(score),
+                        "decision": decision,
+                        "company_name": job.company_name,
+                        "role_title": job.role_title
+                    },
+                    agent_name="AgentOrchestrator"
+                )
+                self.db.add(event)
+                await self.db.commit()
+            except Exception as ev_err:
+                logger.error(f"Failed to create matching event in orchestrator: {ev_err}")
         
         # 7. Queue the browser automation task in Celery if SHORTLISTED
         if app_status == "SHORTLISTED":

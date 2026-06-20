@@ -1,6 +1,6 @@
 import pytest
 import asyncio
-from app.database import engine
+from app.database import close_current_loop_engine
 
 @pytest.fixture(autouse=True)
 def cleanup_engine():
@@ -18,6 +18,6 @@ def cleanup_engine():
         asyncio.set_event_loop(loop)
         
     if loop.is_running():
-        loop.create_task(engine.dispose())
+        loop.create_task(close_current_loop_engine())
     else:
-        loop.run_until_complete(engine.dispose())
+        loop.run_until_complete(close_current_loop_engine())

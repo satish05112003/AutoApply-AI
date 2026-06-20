@@ -164,3 +164,91 @@ async def download_evidence_file(key: str, user: User = Depends(get_current_user
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Evidence file key not found in storage."
         )
+
+@router.post("/{id}/retry")
+async def retry_application(
+    id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Manually retry a failed application."""
+    stmt = select(Application).where(Application.id == id, Application.user_id == user.id)
+    result = await db.execute(stmt)
+    app = result.scalars().first()
+    if not app:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Application not found."
+        )
+    
+    # Can retry if status is in a failed or pending state
+    app.status = "SHORTLISTED"
+    app.attempts = 0  # reset retry attempts count
+    app.last_error = None
+    db.add(app)
+    
+    # Log a manual retry event
+    from app.models.applications import ApplicationEvent
+    event = ApplicationEvent(
+        application_id=app.id,
+        user_id=user.id,
+        event_type="MANUAL_RETRY",
+        old_status=app.status,
+        new_status="SHORTLISTED",
+        agent_name="UserAdmin"
+    )
+    db.add(event)
+    await db.commit()
+    await db.refresh(app)
+    
+    try:
+        from app.tasks.application_tasks import execute_browser_application
+        # Dispatch Celery task
+        execute_browser_application.delay(str(app.id))
+        logger.info(f"Manually retried and enqueued Celery submission runner for app ID: {app.id}")
+    except Exception as e:
+        logger.error(f"Failed queueing manually retried application task: {e}")
+        
+    return {"message": "Application retry enqueued successfully."}
+
+class ApplicationStatusUpdate(BaseModel):
+    status: str
+
+@router.put("/{id}/status")
+async def update_application_status(
+    id: UUID,
+    payload: ApplicationStatusUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Manually transition an application status from the Kanban board."""
+    stmt = select(Application).where(Application.id == id, Application.user_id == user.id)
+    result = await db.execute(stmt)
+    app = result.scalars().first()
+    if not app:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Application not found."
+        )
+        
+    old_status = app.status
+    app.status = payload.status.upper()
+    db.add(app)
+    
+    # Add application event
+    from app.models.applications import ApplicationEvent
+    event = ApplicationEvent(
+        application_id=app.id,
+        user_id=user.id,
+        event_type="STATUS_CHANGED",
+        old_status=old_status,
+        new_status=app.status,
+        agent_name="UserAdmin",
+        details={"method": "kanban_drag_drop"}
+    )
+    db.add(event)
+    await db.commit()
+    await db.refresh(app)
+    return app
+
+

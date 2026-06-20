@@ -130,3 +130,39 @@ class Offer(Base):
 
     # Relationships
     application = relationship("Application", back_populates="offers")
+
+
+# ---------------------------------------------------------------------------
+# SQLAlchemy Event Listeners for Google Sheets Synchronization
+# ---------------------------------------------------------------------------
+import json
+from sqlalchemy import event, text
+
+@event.listens_for(Application, 'after_insert')
+def after_app_insert(mapper, connection, target):
+    """Auto-queue a pending sheet sync event when a new Application is created."""
+    payload = {"application_id": str(target.id)}
+    stmt = text("""
+        INSERT INTO sheets.event_queue (id, user_id, event_type, payload, status, retry_count, max_retries, created_at)
+        VALUES (:id, :user_id, 'APPLICATION_SYNC', :payload, 'PENDING', 0, 5, NOW())
+    """)
+    connection.execute(stmt, {
+        "id": str(uuid.uuid4()),
+        "user_id": target.user_id,
+        "payload": json.dumps(payload)
+    })
+
+@event.listens_for(Application, 'after_update')
+def after_app_update(mapper, connection, target):
+    """Auto-queue a pending sheet sync event when an Application is updated."""
+    payload = {"application_id": str(target.id)}
+    stmt = text("""
+        INSERT INTO sheets.event_queue (id, user_id, event_type, payload, status, retry_count, max_retries, created_at)
+        VALUES (:id, :user_id, 'APPLICATION_SYNC', :payload, 'PENDING', 0, 5, NOW())
+    """)
+    connection.execute(stmt, {
+        "id": str(uuid.uuid4()),
+        "user_id": target.user_id,
+        "payload": json.dumps(payload)
+    })
+

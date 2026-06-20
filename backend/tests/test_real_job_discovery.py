@@ -4,7 +4,7 @@ import pytest
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import create_engine, text, select
 from app.config import settings
-from app.database import engine as async_db_engine
+from app.database import close_current_loop_engine
 from app.services.job_service import JobService
 from app.tasks.discovery_tasks import _async_run_job_discovery
 from app.models.jobs import JobDiscoveryLog
@@ -48,7 +48,7 @@ async def run_with_engine_cleanup(coro):
     try:
         return await coro
     finally:
-        await async_db_engine.dispose()
+        await close_current_loop_engine()
 
 def test_no_mock_jobs_in_crawlers():
     """Verify that all mock job generator functions/fallbacks have been removed."""

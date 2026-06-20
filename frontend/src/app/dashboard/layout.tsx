@@ -80,6 +80,10 @@ export default function DashboardLayout({
         try {
           const payload = JSON.parse(event.data);
           console.log(`[WebSocket] Received payload:`, payload);
+          if (payload.event === "SYSTEM_STATUS") {
+            useStore.setState({ systemHealth: payload.data });
+            return;
+          }
           if (payload.event === "JOB_MATCHED") {
             addLogLine(`[MatchingAgent] Matched job ID '${payload.job_id}' with score ${payload.score}% -> ${payload.decision}`);
           } else if (payload.event === "APPLICATION_SUBMITTED") {

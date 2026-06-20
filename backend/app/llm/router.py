@@ -19,6 +19,7 @@ Changes from original:
 import json
 import logging
 import time
+import asyncio
 from typing import Optional, Dict, Any, Type
 import httpx
 from pydantic import BaseModel
@@ -95,9 +96,12 @@ class LLMRouter:
         if _probe_ollama_once():
             for attempt in range(max_retries):
                 try:
-                    content = await self._call_ollama(
-                        target_model, prompt, system_prompt,
-                        response_model, temperature
+                    content = await asyncio.wait_for(
+                        self._call_ollama(
+                            target_model, prompt, system_prompt,
+                            response_model, temperature
+                        ),
+                        timeout=15.0
                     )
                     if content:
                         logger.info(f"Ollama answered. model='{target_model}' attempt={attempt+1}")
@@ -105,7 +109,7 @@ class LLMRouter:
                 except Exception as e:
                     wait = 0.5 * (2 ** attempt)
                     logger.warning(f"Ollama attempt {attempt+1} failed: {e}. Retry in {wait}s")
-                    time.sleep(wait)
+                    await asyncio.sleep(wait)
                     errors.append(f"Ollama[{attempt+1}]: {e}")
             logger.warning("Ollama failed all retries. Trying cloud fallback.")
         else:
@@ -116,20 +120,54 @@ class LLMRouter:
 
         # ── 2. Groq API ──────────────────────────────────────────────────────
         if self.groq_key:
-            for attempt in range(max_retries):
+            groq_delays = [1.0, 2.0, 4.0]
+            groq_attempts = 4  # Initial attempt + 3 retries
+            
+            for attempt in range(groq_attempts):
                 try:
-                    content = await self._call_groq(
-                        prompt, system_prompt, response_model, temperature
+                    logger.info(f"Groq API call: attempt {attempt+1}/{groq_attempts}")
+                    content = await asyncio.wait_for(
+                        self._call_groq(
+                            prompt, system_prompt, response_model, temperature
+                        ),
+                        timeout=15.0
                     )
-                    if content:
-                        logger.info(f"Groq answered. attempt={attempt+1}")
-                        return _extract_json(content) if response_model else content
-                except Exception as e:
-                    wait = 1.0 * (2 ** attempt)
-                    logger.warning(f"Groq attempt {attempt+1} failed: {e}. Retry in {wait}s")
-                    time.sleep(wait)
-                    errors.append(f"Groq[{attempt+1}]: {e}")
-            logger.warning("Groq failed all retries. Trying OpenRouter.")
+                    
+                    if not content:
+                        raise ValueError("Empty response received from Groq API")
+                        
+                    # Validate JSON structure if a response model is expected
+                    if response_model:
+                        clean_json = _extract_json(content)
+                        json.loads(clean_json)
+                        
+                    logger.info(f"Groq answered successfully on attempt {attempt+1}")
+                    return _extract_json(content) if response_model else content
+                    
+                except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError, 
+                        json.JSONDecodeError, KeyError, ValueError, asyncio.TimeoutError) as e:
+                    
+                    # Identify the error category
+                    is_429 = False
+                    if isinstance(e, httpx.HTTPStatusError):
+                        is_429 = (e.response.status_code == 429)
+                        err_msg = f"HTTP status {e.response.status_code}"
+                    elif isinstance(e, asyncio.TimeoutError) or isinstance(e, httpx.TimeoutException):
+                        err_msg = "Timeout"
+                    elif isinstance(e, httpx.ConnectError):
+                        err_msg = "Connection error"
+                    else:
+                        err_msg = f"Invalid response: {e}"
+                        
+                    if attempt < len(groq_delays):
+                        wait = groq_delays[attempt]
+                        logger.warning(f"Groq attempt {attempt+1} failed due to {err_msg}. Retrying in {wait}s...")
+                        await asyncio.sleep(wait)
+                        errors.append(f"Groq[attempt={attempt+1}]: {err_msg} (retrying)")
+                    else:
+                        logger.warning(f"Groq attempt {attempt+1} failed due to {err_msg}. No retries left.")
+                        errors.append(f"Groq[attempt={attempt+1}]: {err_msg} (failed)")
+            logger.warning("Groq failed all attempts. Switching to OpenRouter.")
         else:
             errors.append("Groq: no API key configured (set GROQ_API_KEY in .env)")
 
@@ -137,8 +175,11 @@ class LLMRouter:
         if self.openrouter_key:
             for attempt in range(max_retries):
                 try:
-                    content = await self._call_openrouter(
-                        prompt, system_prompt, response_model, temperature
+                    content = await asyncio.wait_for(
+                        self._call_openrouter(
+                            prompt, system_prompt, response_model, temperature
+                        ),
+                        timeout=15.0
                     )
                     if content:
                         logger.info(f"OpenRouter answered. attempt={attempt+1}")
@@ -146,7 +187,7 @@ class LLMRouter:
                 except Exception as e:
                     wait = 1.0 * (2 ** attempt)
                     logger.warning(f"OpenRouter attempt {attempt+1} failed: {e}. Retry in {wait}s")
-                    time.sleep(wait)
+                    await asyncio.sleep(wait)
                     errors.append(f"OpenRouter[{attempt+1}]: {e}")
         else:
             errors.append("OpenRouter: no API key configured (set OPENROUTER_API_KEY in .env)")

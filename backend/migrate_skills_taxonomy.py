@@ -2,7 +2,7 @@ import asyncio
 import sys
 from collections import defaultdict
 from sqlalchemy import select, delete, text
-from app.database import SessionLocal, engine
+from app.database import SessionLocal, close_current_loop_engine
 from app.models.profile import Skill
 from app.utils.resume_parser import get_skill_category, normalize_skill_name, CATEGORY_DISPLAY_MAP
 
@@ -78,7 +78,7 @@ async def run_migration():
         for row in verify_res.fetchall():
             print(f"Category: {row[0]:<30} | Count: {row[1]}")
             
-    await engine.dispose()
+    await close_current_loop_engine()
 
 if __name__ == "__main__":
     asyncio.run(run_migration())

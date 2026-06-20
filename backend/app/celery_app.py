@@ -39,6 +39,54 @@ celery_app.conf.update(
     task_time_limit=3600,          # 1 hour hard limit
     task_soft_time_limit=3500,     # 58-minute soft limit (raises SoftTimeLimitExceeded)
 
+    # Task Queue Routing
+    task_routes={
+        "app.tasks.discovery_tasks.run_job_discovery": {"queue": "discovery"},
+        "app.tasks.discovery_tasks.scheduled_discover_jobs": {"queue": "discovery"},
+        "app.tasks.discovery_tasks.orchestrate_job_task": {"queue": "orchestrate"},
+        "app.tasks.application_tasks.execute_browser_application": {"queue": "applications"},
+        "app.tasks.application_tasks.scheduled_retry_pending_applications": {"queue": "applications"},
+        "app.tasks.application_tasks.scheduled_recover_stuck_applications": {"queue": "applications"},
+        "app.tasks.sheets_tasks.sync_google_sheets_batch": {"queue": "sheets"},
+        "app.tasks.email_tasks.monitor_gmail_inbox": {"queue": "email"},
+    },
+
+    # Task Annotations for specific timeouts
+    task_annotations={
+        "app.tasks.sheets_tasks.sync_google_sheets_batch": {
+            "time_limit": 180,
+            "soft_time_limit": 150,
+        },
+        "app.tasks.email_tasks.monitor_gmail_inbox": {
+            "time_limit": 300,
+            "soft_time_limit": 250,
+        },
+        "app.tasks.discovery_tasks.run_job_discovery": {
+            "time_limit": 600,
+            "soft_time_limit": 500,
+        },
+        "app.tasks.discovery_tasks.scheduled_discover_jobs": {
+            "time_limit": 600,
+            "soft_time_limit": 500,
+        },
+        "app.tasks.discovery_tasks.orchestrate_job_task": {
+            "time_limit": 300,
+            "soft_time_limit": 250,
+        },
+        "app.tasks.application_tasks.execute_browser_application": {
+            "time_limit": 600,
+            "soft_time_limit": 500,
+        },
+        "app.tasks.application_tasks.scheduled_recover_stuck_applications": {
+            "time_limit": 180,
+            "soft_time_limit": 150,
+        },
+    },
+
+    # Enable worker monitoring events
+    worker_send_task_events=True,
+    worker_enable_remote_control=True,
+
     # Reliability — ack AFTER execution so crashed tasks get requeued
     task_acks_late=True,
     task_reject_on_worker_lost=True,
@@ -76,7 +124,7 @@ celery_app.autodiscover_tasks([
 celery_app.conf.beat_schedule = {
     "sync-sheets-batch": {
         "task": "app.tasks.sheets_tasks.sync_google_sheets_batch",
-        "schedule": 60.0,      # every 1 minute
+        "schedule": 15.0,      # every 15 seconds
     },
     "scheduled-discovery": {
         "task": "app.tasks.discovery_tasks.scheduled_discover_jobs",
@@ -89,6 +137,10 @@ celery_app.conf.beat_schedule = {
     "retry-pending-applications": {
         "task": "app.tasks.application_tasks.scheduled_retry_pending_applications",
         "schedule": 300.0,     # every 5 minutes
+    },
+    "recover-stuck-applications": {
+        "task": "app.tasks.application_tasks.scheduled_recover_stuck_applications",
+        "schedule": 120.0,     # every 2 minutes
     },
 }
 

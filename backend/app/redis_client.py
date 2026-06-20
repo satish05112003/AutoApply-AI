@@ -58,5 +58,19 @@ class RedisClient:
             logger.error(f"Failed deleting key '{key}' from Redis: {e}")
             return False
 
+    def get_celery_queue_size(self) -> int:
+        """Get the total number of pending tasks in Celery queues from Redis."""
+        try:
+            queues = ["celery", "discovery", "orchestrate", "applications", "sheets", "email"]
+            total = 0
+            for q in queues:
+                length = self.client.llen(q)
+                if length:
+                    total += length
+            return total
+        except Exception as e:
+            logger.error(f"Failed getting celery queue size: {e}")
+            return 0
+
 # Global Redis Client Instance
 redis_client = RedisClient()

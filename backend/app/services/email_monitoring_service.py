@@ -32,6 +32,25 @@ def normalize_company_name(name: str) -> str:
     cleaned_words = [w for w in words if w not in suffixes]
     return " ".join(cleaned_words).strip()
 
+def extract_recruiter_name(from_str: str) -> str:
+    """Extract name from From header: e.g. 'John Doe <john@company.com>' -> 'John Doe'"""
+    match = re.match(r'^["\']?([^"\'<]+?)["\']?\s*<.+>$', from_str)
+    if match:
+        name = match.group(1).strip()
+        if name:
+            return name
+    parts = from_str.split('<')
+    if len(parts) > 1:
+        name = parts[0].replace('"', '').replace("'", "").strip()
+        if name:
+            return name
+    if '@' in from_str:
+        email_part = from_str.split('<')[-1].replace('>', '').strip()
+        name_part = email_part.split('@')[0]
+        name = " ".join(p.capitalize() for p in re.split(r'[\._-]', name_part))
+        return name
+    return from_str
+
 def get_email_body(msg: email.message.Message) -> str:
     """Extract and decode plain text body from a MIME email message."""
     if msg.is_multipart():
@@ -160,6 +179,19 @@ class EmailMonitoringService:
                 
                 body = get_email_body(msg)
                 
+                # Check for calendar invite (.ics attachments or text/calendar content type)
+                has_calendar_invite = False
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        content_type = part.get_content_type()
+                        filename = part.get_filename()
+                        if content_type == "text/calendar" or (filename and filename.endswith(".ics")):
+                            has_calendar_invite = True
+                            break
+                else:
+                    if msg.get_content_type() == "text/calendar":
+                        has_calendar_invite = True
+
                 # Combine subject and body for matching
                 search_blob = (subject + " " + body).lower()
                 from_lower = from_str.lower()
@@ -172,7 +204,6 @@ class EmailMonitoringService:
                     norm_comp = mapping["normalized_company"]
 
                     # Check if company name is mentioned in Subject/Body or from the sender domain
-                    # E.g. "Google" in "from: hr@google.com" or mentioned in text
                     is_match = False
                     if norm_comp and len(norm_comp) >= 2:
                         if norm_comp in search_blob or norm_comp in from_lower:
@@ -181,35 +212,40 @@ class EmailMonitoringService:
                     if is_match:
                         # Determine new status based on content keywords
                         new_status = None
-                        recruiter_contact = from_str
+                        recruiter_contact = extract_recruiter_name(from_str)
                         
                         # Rejection Check
                         rejection_keywords = [
                             "not moving forward", "unfortunately", "thank you for your time",
                             "decided to pursue other", "regret to inform", "another candidate",
-                            "unable to offer", "not select", "not be moving", "pursue other options"
+                            "unable to offer", "not select", "not be moving", "pursue other options",
+                            "position has been filled", "not selected", "rejection", "closed application"
                         ]
                         # Interview Check
                         interview_keywords = [
                             "interview", "schedule", "availability to chat", "phone screen",
                             "discuss your application", "zoom link", "google meet", "calendar",
-                            "meet with", "technical screening", "call with"
+                            "meet with", "technical screening", "call with", "scheduling link",
+                            "calendly.com", "book a slot", "schedule details"
                         ]
                         # Online Assessment Check
                         oa_keywords = [
                             "assessment", "hackerrank", "codility", "online test",
-                            "coding challenge", "quiz", "test link", "take-home", "technical test"
+                            "coding challenge", "quiz", "test link", "take-home", "technical test",
+                            "assignment"
                         ]
                         # Offer Check
                         offer_keywords = [
                             "offer letter", "pleased to offer", "join us", "congratulations",
-                            "employment agreement", "offer details"
+                            "employment agreement", "offer details", "compensation package"
                         ]
 
-                        if any(kw in search_blob for kw in rejection_keywords):
-                            new_status = "REJECTED"
+                        if has_calendar_invite:
+                            new_status = "INTERVIEW"
                         elif any(kw in search_blob for kw in offer_keywords):
                             new_status = "OFFER"
+                        elif any(kw in search_blob for kw in rejection_keywords):
+                            new_status = "REJECTED"
                         elif any(kw in search_blob for kw in interview_keywords):
                             new_status = "INTERVIEW"
                         elif any(kw in search_blob for kw in oa_keywords):
@@ -230,7 +266,7 @@ class EmailMonitoringService:
                             if new_order > current_order or new_status in ["REJECTED", "OFFER"]:
                                 old_status = app.status
                                 app.status = new_status
-                                app.updated_at = datetime.utcnow()
+                                app.updated_at = datetime.now(timezone.utc)
                                 
                                 # Add ApplicationEvent
                                 event = ApplicationEvent(
@@ -243,32 +279,16 @@ class EmailMonitoringService:
                                     details={
                                         "subject": subject,
                                         "sender": from_str,
-                                        "matched_keyword": next((kw for kw in rejection_keywords + offer_keywords + interview_keywords + oa_keywords if kw in search_blob), "unknown")
+                                        "matched_keyword": "calendar_invite" if has_calendar_invite else next((kw for kw in rejection_keywords + offer_keywords + interview_keywords + oa_keywords if kw in search_blob), "unknown")
                                     }
                                 )
                                 db.add(event)
                                 
                                 # Queue Google Sheets sync event
-                                sheets_payload = {
-                                    "application_id": str(app.id),
-                                    "submitted_at": app.submitted_at.strftime("%Y-%m-%d") if app.submitted_at else datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                                    "company_name": job.company_name,
-                                    "role_title": job.role_title,
-                                    "location": job.location or "Remote",
-                                    "source": job.source or "Direct",
-                                    "resume_name": resume.resume_name if resume else "Resume",
-                                    "match_score": int(app.match_score) if app.match_score is not None else 0,
-                                    "status": new_status,
-                                    "interview_status": "Scheduled" if new_status == "INTERVIEW" else ("None" if new_status != "OFFER" else "Offered"),
-                                    "recruiter_contact": recruiter_contact,
-                                    "source_url": job.source_url,
-                                    "work_type": job.work_type or "FULL_TIME"
-                                }
-                                
                                 sheet_event = EventQueue(
                                     user_id=user.id,
-                                    event_type="APPLICATION_UPDATE",
-                                    payload=sheets_payload,
+                                    event_type="APPLICATION_SYNC",
+                                    payload={"application_id": str(app.id)},
                                     status="PENDING"
                                 )
                                 db.add(sheet_event)
