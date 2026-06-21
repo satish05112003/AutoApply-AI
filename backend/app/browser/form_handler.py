@@ -42,10 +42,11 @@ class FormHandler:
         
         # Detect iframe context
         target = page
-        for frame in page.frames:
-            if "greenhouse.io/embed" in frame.url or "greenhouse.io/job_app" in frame.url or "greenhouse.io/job_board" in frame.url:
-                target = frame
-                break
+        if hasattr(page, "frames"):
+            for frame in page.frames:
+                if "greenhouse.io/embed" in frame.url or "greenhouse.io/job_app" in frame.url or "greenhouse.io/job_board" in frame.url:
+                    target = frame
+                    break
                 
         try:
             is_multi_step = await FormHandler.detect_multi_step(page)
@@ -184,10 +185,11 @@ class FormHandler:
         
         # Detect iframe context
         target = page
-        for frame in page.frames:
-            if "greenhouse.io/embed" in frame.url or "greenhouse.io/job_app" in frame.url or "greenhouse.io/job_board" in frame.url:
-                target = frame
-                break
+        if hasattr(page, "frames"):
+            for frame in page.frames:
+                if "greenhouse.io/embed" in frame.url or "greenhouse.io/job_app" in frame.url or "greenhouse.io/job_board" in frame.url:
+                    target = frame
+                    break
                 
         for selector, value in field_values.items():
             try:
@@ -251,7 +253,9 @@ class FormHandler:
                     if isinstance(value, (str, int, float)):
                         name_attr = await el.get_attribute("name")
                         if name_attr:
-                            radio_el = await page.query_selector(f"input[name='{name_attr}'][value='{value}']")
+                            # Escape backslashes and double quotes safely for CSS selector
+                            escaped_val = str(value).replace('\\', '\\\\').replace('"', '\\"')
+                            radio_el = await target.query_selector(f'input[name="{name_attr}"][value="{escaped_val}"]')
                             if radio_el:
                                 await radio_el.click()
                                 filled_count += 1
@@ -268,8 +272,7 @@ class FormHandler:
                         filled_count += 1
                         
                 else:
-                    await el.fill("")
-                    await el.type(str(value), delay=50)
+                    await el.fill(str(value))
                     filled_count += 1
                     
             except Exception as e:

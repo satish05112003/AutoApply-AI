@@ -232,7 +232,8 @@ async def update_application_status(
         )
         
     old_status = app.status
-    app.status = payload.status.upper()
+    target_status = payload.status.upper()
+    app.status = target_status
     db.add(app)
     
     # Add application event
@@ -249,6 +250,20 @@ async def update_application_status(
     db.add(event)
     await db.commit()
     await db.refresh(app)
+    
+    # Auto-enqueue Celery browser task if transitioned to SHORTLISTED or APPLYING
+    should_enqueue = (
+        (target_status == "SHORTLISTED" and old_status not in ["SHORTLISTED", "READY"]) or
+        (target_status == "APPLYING" and old_status != "APPLYING")
+    )
+    if should_enqueue:
+        try:
+            from app.tasks.application_tasks import execute_browser_application
+            execute_browser_application.delay(str(app.id))
+            logger.info(f"Kanban transition to {target_status} enqueued Celery runner for app ID: {app.id}")
+        except Exception as e:
+            logger.error(f"Failed queueing task from Kanban transition: {e}")
+            
     return app
 
 

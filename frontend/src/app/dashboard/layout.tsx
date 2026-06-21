@@ -36,6 +36,46 @@ export default function DashboardLayout({
 
   const [wsStatus, setWsStatus] = useState<"connected" | "connecting" | "disconnected">("disconnected");
 
+  // ── Prevent ALL programmatic viewport scrolling (Issue #1) ────────────────
+  // The dashboard must NEVER auto-scroll the viewport. Log updates, WebSocket
+  // messages, and React state changes must not change the user's scroll
+  // position. Only the ActivityLog container scrolls its own internal area.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const noop = () => {};
+
+    // Freeze all window-level scroll APIs
+    const origScrollTo  = window.scrollTo;
+    const origScroll    = window.scroll;
+    const origScrollBy  = window.scrollBy;
+    window.scrollTo  = noop as any;
+    window.scroll    = noop as any;
+    window.scrollBy  = noop as any;
+
+    // Block scrollIntoView entirely — it causes viewport jumps on dashboard.
+    // The ActivityLog uses scrollContainerRef.current.scrollTop directly
+    // (not scrollIntoView), so this block does not affect log scrolling.
+    const origScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = noop as any;
+
+    // Force preventScroll on every focus so focusing a new element never
+    // jumps the viewport.
+    const origFocus = HTMLElement.prototype.focus;
+    HTMLElement.prototype.focus = function (options?: FocusOptions) {
+      origFocus.call(this, { ...options, preventScroll: true });
+    };
+
+    return () => {
+      window.scrollTo  = origScrollTo;
+      window.scroll    = origScroll;
+      window.scrollBy  = origScrollBy;
+      Element.prototype.scrollIntoView = origScrollIntoView;
+      HTMLElement.prototype.focus      = origFocus;
+    };
+  }, []);
+
+
   // Auth Protection & Initial Data Load
   useEffect(() => {
     if (!token) {

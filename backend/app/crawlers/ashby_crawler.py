@@ -44,7 +44,7 @@ class AshbyCrawler(BaseCrawler):
                 return True
         return False
 
-    async def crawl(self, query: str, location: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+    async def crawl(self, query: str, location: Optional[str] = None, limit: int = 100, params: Optional[Dict[str, Any]] = None, **kwargs) -> List[Dict[str, Any]]:
         """
         Scrapes real jobs from Ashby boards for companies in self.COMPANIES
         matching the query/location and posted in the last 7 days.

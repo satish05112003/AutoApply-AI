@@ -14,6 +14,8 @@ logger = logging.getLogger("autoapply_ai.tasks.discovery")
 # We import crawler modules here to ensure registration
 import app.crawlers.linkedin_crawler
 import app.crawlers.naukri_crawler
+import app.crawlers.indeed_crawler
+import app.crawlers.unstop_crawler
 import app.crawlers.wellfound_crawler
 import app.crawlers.ashby_crawler
 import app.crawlers.greenhouse_crawler
@@ -28,11 +30,11 @@ except Exception:
     celery_task_decorator = shared_task
 
 @celery_task_decorator
-def run_job_discovery(source_name: str, query: str, location: Optional[str] = None) -> str:
+def run_job_discovery(source_name: str, query: str, location: Optional[str] = None, params: Optional[dict] = None) -> str:
     """Celery task to run a specific crawler, ingest new postings, and write logs."""
     import asyncio
     return asyncio.run(
-        _async_run_job_discovery(source_name, query, location)
+        _async_run_job_discovery(source_name, query, location, params)
     )
 
 @celery_task_decorator
@@ -88,7 +90,7 @@ async def _async_orchestrate_job_task(user_id: str, job_id: str) -> str:
         except Exception:
             pass
 
-async def _async_run_job_discovery(source_name: str, query: str, location: Optional[str] = None) -> str:
+async def _async_run_job_discovery(source_name: str, query: str, location: Optional[str] = None, params: Optional[dict] = None) -> str:
     import time
     from celery import current_task
     t0 = time.time()
@@ -134,7 +136,7 @@ async def _async_run_job_discovery(source_name: str, query: str, location: Optio
         try:
             # 2. Run crawler
             logger.info(f"Crawler Started: source={source_name}, query={query}, location={location or 'Remote'}")
-            scraped_jobs = await crawler.crawl(query, location)
+            scraped_jobs = await crawler.crawl(query, location, params=params)
             logger.info(f"Crawler Finished: source={source_name}. Jobs Returned: {len(scraped_jobs)}")
 
             # 3. Ingest jobs in batch
@@ -360,33 +362,28 @@ async def _async_scheduled_discover_jobs() -> str:
                 queued_count = 0
                 
                 # Deduplicate discovery crawls across all active candidates
-                unique_crawls = set()
+                unique_crawls = {}
                 for user in users:
                     stmt_pref = select(Preferences).where(Preferences.user_id == user.id)
                     res_pref = await db.execute(stmt_pref)
                     prefs = res_pref.scalars().first()
                     
-                    roles = prefs.preferred_roles if (prefs and prefs.preferred_roles) else ["AI Engineer", "Software Engineer"]
-                    locations = prefs.preferred_locations if (prefs and prefs.preferred_locations) else ["Remote"]
-                    
-                    # Determine preferred sources, default to all available including naukri
-                    pref_sources = prefs.preferred_sources if (prefs and prefs.preferred_sources) else ["linkedin", "naukri", "wellfound", "ashby", "greenhouse", "lever"]
-                    clean_sources = [s.lower().strip() for s in pref_sources if s.lower().strip() in ["linkedin", "naukri", "wellfound", "ashby", "greenhouse", "lever"]]
-                    if not clean_sources:
-                        clean_sources = ["linkedin", "naukri", "wellfound", "ashby", "greenhouse", "lever"]
-
-                    for source in clean_sources:
-                        for role in roles:
-                            for loc in locations:
-                                unique_crawls.add((source, role, loc))
+                    from app.services.search_generation_engine import SearchGenerationEngine
+                    search_configs = SearchGenerationEngine.generate_search_configs(prefs)
+                    for config in search_configs:
+                        source = config["source"]
+                        role = config["query"]
+                        loc = config["location"]
+                        params = config["params"]
+                        unique_crawls[(source, role, loc)] = params
                 
-                for source, role, loc in unique_crawls:
+                for (source, role, loc), params in unique_crawls.items():
                     redis_key = f"last_crawl:{source}:{role}:{loc}"
                     if redis_client.get_value(redis_key):
                         logger.info(f"Skipping crawl for {source}:{role}:{loc} - already crawled recently.")
                         continue
                     
-                    run_job_discovery.delay(source, role, loc)
+                    run_job_discovery.delay(source, role, loc, params)
                     redis_client.set_value(redis_key, "true", expire_seconds=14400)
                     queued_count += 1
                                 

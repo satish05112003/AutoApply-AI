@@ -49,7 +49,7 @@ class WellfoundCrawler(BaseCrawler):
                 continue
         return None
 
-    async def crawl(self, query: str, location: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    async def crawl(self, query: str, location: Optional[str] = None, limit: int = 50, params: Optional[Dict[str, Any]] = None, **kwargs) -> List[Dict[str, Any]]:
         jobs_list = []
         loc = location or "Remote"
         # Build search URL using role keyword

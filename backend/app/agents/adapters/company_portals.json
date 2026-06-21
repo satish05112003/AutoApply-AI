@@ -1,0 +1,219 @@
+{
+    "portals": [
+        {
+            "company_id": "google",
+            "name_keywords": ["google", "alphabet"],
+            "domain_keywords": ["careers.google", "google.com/about/careers"],
+            "steps": [
+                {"action": "click", "selector": "a:has-text('Apply'), button:has-text('Apply')", "optional": true},
+                {"action": "upload_resume", "selector": "input[type='file']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button:has-text('Submit'), button:has-text('Submit application')"}
+            ]
+        },
+        {
+            "company_id": "microsoft",
+            "name_keywords": ["microsoft"],
+            "domain_keywords": ["careers.microsoft.com", "microsoft.com/careers"],
+            "steps": [
+                {"action": "click", "selector": "button:has-text('Apply Now'), button:has-text('Apply')", "optional": true},
+                {"action": "upload_resume", "selector": "input[type='file'][name*='resume']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button:has-text('Submit'), button:has-text('Apply')"}
+            ]
+        },
+        {
+            "company_id": "nvidia",
+            "name_keywords": ["nvidia"],
+            "domain_keywords": ["nvidia.wd5.myworkdayjobs.com", "nvidia.com/careers"],
+            "steps": [
+                {"action": "click", "selector": "button:has-text('Apply')", "optional": true},
+                {"action": "click", "selector": "button:has-text('Apply Manually')", "optional": true},
+                {"action": "upload_resume", "selector": "input[type='file'][id*='resume']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "click", "selector": "button:has-text('Save and Continue')", "wait_ms": 3000},
+                {"action": "fill_screening", "optional": true},
+                {"action": "click", "selector": "button:has-text('Save and Continue')", "wait_ms": 3000},
+                {"action": "submit", "selector": "button:has-text('Submit')"}
+            ]
+        },
+        {
+            "company_id": "apple",
+            "name_keywords": ["apple"],
+            "domain_keywords": ["apple.com/careers", "jobs.apple.com"],
+            "steps": [
+                {"action": "click", "selector": "button:has-text('Submit Application')", "optional": true},
+                {"action": "upload_resume", "selector": "input[type='file']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button:has-text('Submit'), button:has-text('Apply')"}
+            ]
+        },
+        {
+            "company_id": "meta",
+            "name_keywords": ["meta", "facebook"],
+            "domain_keywords": ["metacareers.com", "facebook.com/careers"],
+            "steps": [
+                {"action": "click", "selector": "button:has-text('Apply')", "optional": true},
+                {"action": "upload_resume", "selector": "input[type='file']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button:has-text('Submit'), button:has-text('Apply')"}
+            ]
+        },
+        {
+            "company_id": "amazon",
+            "name_keywords": ["amazon"],
+            "domain_keywords": ["amazon.jobs", "careers.amazon"],
+            "steps": [
+                {"action": "click", "selector": "button:has-text('Apply Now')", "optional": true},
+                {"action": "upload_resume", "selector": "input[type='file']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button:has-text('Submit application'), button:has-text('Submit')"}
+            ]
+        },
+        {
+            "company_id": "tesla",
+            "name_keywords": ["tesla"],
+            "domain_keywords": ["tesla.com/careers", "tesla.com/jobs"],
+            "steps": [
+                {"action": "upload_resume", "selector": "input[type='file']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button:has-text('Submit'), button:has-text('Next')"}
+            ]
+        },
+        {
+            "company_id": "openai",
+            "name_keywords": ["openai"],
+            "domain_keywords": ["openai.com/careers", "openai.com/jobs"],
+            "steps": [
+                {"action": "upload_resume", "selector": "input[type='file']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button[type='submit'], button:has-text('Submit Application')"}
+            ]
+        },
+        {
+            "company_id": "anthropic",
+            "name_keywords": ["anthropic"],
+            "domain_keywords": ["anthropic.com/careers", "anthropic.com/jobs"],
+            "steps": [
+                {"action": "upload_resume", "selector": "input[type='file']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button[type='submit'], button:has-text('Submit Application')"}
+            ]
+        },
+        {
+            "company_id": "stripe",
+            "name_keywords": ["stripe"],
+            "domain_keywords": ["stripe.com/jobs", "stripe.com/careers"],
+            "steps": [
+                {"action": "upload_resume", "selector": "input[type='file']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button[type='submit']"}
+            ]
+        },
+        {
+            "company_id": "databricks",
+            "name_keywords": ["databricks"],
+            "domain_keywords": ["databricks.com/careers", "databricks.com/jobs"],
+            "steps": [
+                {"action": "upload_resume", "selector": "input[type='file']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button[type='submit'], button:has-text('Submit Application')"}
+            ]
+        },
+        {
+            "company_id": "amd",
+            "name_keywords": ["amd", "advanced micro devices"],
+            "domain_keywords": ["amd.com/careers"],
+            "steps": [
+                {"action": "click", "selector": "button:has-text('Apply')", "optional": true},
+                {"action": "upload_resume", "selector": "input[type='file']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button:has-text('Submit')"}
+            ]
+        },
+        {
+            "company_id": "intel",
+            "name_keywords": ["intel"],
+            "domain_keywords": ["intel.com/content/www/us/en/jobs"],
+            "steps": [
+                {"action": "click", "selector": "button:has-text('Apply')", "optional": true},
+                {"action": "upload_resume", "selector": "input[type='file']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button:has-text('Submit')"}
+            ]
+        },
+        {
+            "company_id": "qualcomm",
+            "name_keywords": ["qualcomm"],
+            "domain_keywords": ["qualcomm.com/careers"],
+            "steps": [
+                {"action": "click", "selector": "button:has-text('Apply')", "optional": true},
+                {"action": "upload_resume", "selector": "input[type='file']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button:has-text('Submit')"}
+            ]
+        },
+        {
+            "company_id": "mistral",
+            "name_keywords": ["mistral", "mistral ai"],
+            "domain_keywords": ["mistral.ai/jobs"],
+            "steps": [
+                {"action": "upload_resume", "selector": "input[type='file']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button[type='submit']"}
+            ]
+        },
+        {
+            "company_id": "scaleai",
+            "name_keywords": ["scale ai", "scaleai"],
+            "domain_keywords": ["scale.com/careers"],
+            "steps": [
+                {"action": "upload_resume", "selector": "input[type='file']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button[type='submit']"}
+            ]
+        },
+        {
+            "company_id": "uber",
+            "name_keywords": ["uber"],
+            "domain_keywords": ["uber.com/careers"],
+            "steps": [
+                {"action": "click", "selector": "button:has-text('Apply')", "optional": true},
+                {"action": "upload_resume", "selector": "input[type='file']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button:has-text('Submit')"}
+            ]
+        },
+        {
+            "company_id": "airbnb",
+            "name_keywords": ["airbnb"],
+            "domain_keywords": ["airbnb.com/careers"],
+            "steps": [
+                {"action": "upload_resume", "selector": "input[type='file']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button[type='submit']"}
+            ]
+        },
+        {
+            "company_id": "notion",
+            "name_keywords": ["notion"],
+            "domain_keywords": ["notion.so/careers"],
+            "steps": [
+                {"action": "upload_resume", "selector": "input[type='file']", "required": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button[type='submit']"}
+            ]
+        },
+        {
+            "company_id": "generic",
+            "name_keywords": ["generic"],
+            "domain_keywords": [],
+            "steps": [
+                {"action": "click", "selector": "a:has-text('Apply'), button:has-text('Apply'), button:has-text('Apply Now')", "optional": true},
+                {"action": "upload_resume", "selector": "input[type='file']", "optional": true},
+                {"action": "fill_profile", "required": true},
+                {"action": "submit", "selector": "button[type='submit'], button:has-text('Submit'), button:has-text('Apply')"}
+            ]
+        }
+    ]
+}

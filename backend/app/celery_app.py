@@ -44,9 +44,18 @@ celery_app.conf.update(
         "app.tasks.discovery_tasks.run_job_discovery": {"queue": "discovery"},
         "app.tasks.discovery_tasks.scheduled_discover_jobs": {"queue": "discovery"},
         "app.tasks.discovery_tasks.orchestrate_job_task": {"queue": "orchestrate"},
+        # Generic application worker (legacy / fallback)
         "app.tasks.application_tasks.execute_browser_application": {"queue": "applications"},
         "app.tasks.application_tasks.scheduled_retry_pending_applications": {"queue": "applications"},
         "app.tasks.application_tasks.scheduled_recover_stuck_applications": {"queue": "applications"},
+        # Per-platform dedicated queues
+        "app.tasks.application_tasks.execute_linkedin_application": {"queue": "linkedin"},
+        "app.tasks.application_tasks.execute_indeed_application": {"queue": "indeed"},
+        "app.tasks.application_tasks.execute_naukri_application": {"queue": "naukri"},
+        "app.tasks.application_tasks.execute_unstop_application": {"queue": "unstop"},
+        "app.tasks.application_tasks.execute_ats_application": {"queue": "ats"},
+        "app.tasks.application_tasks.execute_workday_application": {"queue": "workday"},
+        "app.tasks.application_tasks.execute_portal_application": {"queue": "portal"},
         "app.tasks.sheets_tasks.sync_google_sheets_batch": {"queue": "sheets"},
         "app.tasks.email_tasks.monitor_gmail_inbox": {"queue": "email"},
     },
@@ -73,9 +82,31 @@ celery_app.conf.update(
             "time_limit": 300,
             "soft_time_limit": 250,
         },
+        # Generic fallback worker
         "app.tasks.application_tasks.execute_browser_application": {
+            "time_limit": 900,
+            "soft_time_limit": 800,
+        },
+        # Per-platform workers (longer timeout for multi-step flows)
+        "app.tasks.application_tasks.execute_linkedin_application": {
+            "time_limit": 900,
+            "soft_time_limit": 800,
+        },
+        "app.tasks.application_tasks.execute_indeed_application": {
+            "time_limit": 900,
+            "soft_time_limit": 800,
+        },
+        "app.tasks.application_tasks.execute_naukri_application": {
             "time_limit": 600,
             "soft_time_limit": 500,
+        },
+        "app.tasks.application_tasks.execute_ats_application": {
+            "time_limit": 600,
+            "soft_time_limit": 500,
+        },
+        "app.tasks.application_tasks.execute_workday_application": {
+            "time_limit": 900,
+            "soft_time_limit": 800,
         },
         "app.tasks.application_tasks.scheduled_recover_stuck_applications": {
             "time_limit": 180,

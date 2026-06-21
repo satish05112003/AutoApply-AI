@@ -122,7 +122,11 @@ def is_pid_alive(pid: int) -> bool:
     return False
 
 def get_celery_workers():
-    queues = ["discovery", "orchestrate", "applications", "sheets", "email"]
+    queues = [
+        "discovery", "orchestrate", "applications", "linkedin",
+        "indeed", "naukri", "unstop", "ats", "workday", "portal",
+        "sheets", "email"
+    ]
     workers_status = {q: "OFFLINE" for q in queues}
     
     # 1. Try Celery Inspect
@@ -222,7 +226,11 @@ async def main():
         "postgres": pg_status,
         "redis": {
             "redis_online": redis_status,
-            "queue_sizes": {q: 0 for q in ["discovery", "orchestrate", "applications", "sheets", "email"]}
+            "queue_sizes": {q: 0 for q in [
+                "discovery", "orchestrate", "applications", "linkedin",
+                "indeed", "naukri", "unstop", "ats", "workday", "portal",
+                "sheets", "email"
+            ]}
         },
         "backend": backend_status,
         "websocket": ws_status,

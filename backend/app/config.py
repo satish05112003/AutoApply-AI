@@ -47,8 +47,10 @@ class Settings(BaseSettings):
 
     # Browser Pool Settings
     PLAYWRIGHT_HEADLESS: bool = Field(default=True)
+    BROWSER_HEADLESS: bool = Field(default=False)
     BROWSER_POOL_SIZE: int = Field(default=3)
     BROWSER_TIMEOUT_MS: int = Field(default=30000)
+    BROWSER_CHANNEL: str = Field(default="msedge")  # msedge | chrome | chromium (empty string = bundled Chromium)
 
     # Google OAuth2 Settings (Multi-Tenant — one spreadsheet per user)
     GOOGLE_OAUTH_CLIENT_ID: Optional[str] = Field(default=None)

@@ -366,3 +366,215 @@ async def purge_queues(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to purge queues: {str(e)}"
         )
+
+
+@router.get("/browser/sessions")
+async def get_browser_sessions(
+    user: User = Depends(get_current_user)
+):
+    """
+    Check the user's persistent Chromium profile to see which platforms have active session cookies.
+    """
+    import os
+    import sqlite3
+    import shutil
+    import tempfile
+    
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    profiles_dir = os.path.join(base_dir, "storage", "browser_profiles")
+    user_dir = os.path.join(profiles_dir, f"user_{user.id}")
+    
+    platforms = {
+        "linkedin": False,
+        "indeed": False,
+        "naukri": False,
+        "unstop": False
+    }
+    
+    if not os.path.exists(user_dir):
+        return platforms
+        
+    # Cookie database locations
+    cookie_paths = [
+        os.path.join(user_dir, "Default", "Network", "Cookies"),
+        os.path.join(user_dir, "Default", "Cookies"),
+        os.path.join(user_dir, "Cookies")
+    ]
+    
+    cookie_db = None
+    for path in cookie_paths:
+        if os.path.exists(path):
+            cookie_db = path
+            break
+            
+    if not cookie_db:
+        return platforms
+        
+    # Copy cookie database to a temp file to avoid locking issues if browser is currently open
+    try:
+        # Generate a temporary file path
+        fd, tmp_path = tempfile.mkstemp()
+        os.close(fd)
+        
+        shutil.copy2(cookie_db, tmp_path)
+        
+        # Read cookies
+        conn = sqlite3.connect(tmp_path)
+        cursor = conn.cursor()
+        try:
+            # Check for domain matches
+            cursor.execute("SELECT host_key FROM cookies")
+            rows = cursor.fetchall()
+            for (host,) in rows:
+                host_lower = host.lower()
+                if "linkedin.com" in host_lower:
+                    platforms["linkedin"] = True
+                elif "indeed.com" in host_lower:
+                    platforms["indeed"] = True
+                elif "naukri.com" in host_lower:
+                    platforms["naukri"] = True
+                elif "unstop.com" in host_lower:
+                    platforms["unstop"] = True
+        except Exception as e:
+            logger.warning(f"Error querying sqlite cookies: {e}")
+        finally:
+            conn.close()
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Failed to check browser cookies for user {user.id}: {e}")
+        
+    return platforms
+
+
+@router.post("/browser/login")
+async def run_manual_browser_login(
+    source: str,
+    user: User = Depends(get_current_user)
+):
+    """
+    Launch a headful browser session for manual authentication.
+    Saves context cookies under storage/browser_profiles/user_{user_id}
+    """
+    import playwright.async_api
+    import os
+    import asyncio
+    
+    # 1. Map platform to login URL and success indicators
+    login_urls = {
+        "linkedin": "https://www.linkedin.com/login",
+        "indeed": "https://www.indeed.com/account/login",
+        "naukri": "https://www.naukri.com/nlogin/login",
+        "unstop": "https://unstop.com/auth/login"
+    }
+    
+    success_indicators = {
+        "linkedin": ["linkedin.com/feed", "linkedin.com/mynetwork", "#global-nav"],
+        "indeed": ["indeed.com/myjobs", "indeed.com/resume", "button.gnav-UserIcon-icon", "nav.gnav"],
+        "naukri": ["naukri.com/mnjuser/homepage", "naukri.com/mnjuser/profile", ".profile-status", "#homepage-link"],
+        "unstop": ["unstop.com/dashboard", "unstop.com/profile", ".user-profile-menu", "button.profile-btn"]
+    }
+    
+    platform = source.lower().strip()
+    url = login_urls.get(platform)
+    if not url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported platform for manual login: {source}"
+        )
+        
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    profiles_dir = os.path.join(base_dir, "storage", "browser_profiles")
+    os.makedirs(profiles_dir, exist_ok=True)
+    user_dir = os.path.join(profiles_dir, f"user_{user.id}")
+    
+    from app.config import settings as _settings
+    
+    logger.info(f"Launching headful browser for manual login on {platform} using dir: {user_dir}")
+    
+    playwright_inst = await playwright.async_api.async_playwright().start()
+    try:
+        browser_channel = _settings.BROWSER_CHANNEL or None
+        logger.info(f"Manual login browser channel={browser_channel!r}")
+        
+        _launch_kwargs = dict(
+            user_data_dir=user_dir,
+            headless=False,  # HEADFUL
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled"
+            ],
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+        )
+        if browser_channel:
+            _launch_kwargs["channel"] = browser_channel
+        
+        context = await playwright_inst.chromium.launch_persistent_context(**_launch_kwargs)
+        
+        page = await context.new_page()
+        page.set_default_timeout(60000)
+        
+        await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        
+        # Poll to check if logged in (up to 5 minutes)
+        logged_in = False
+        timeout_seconds = 300
+        for _ in range(timeout_seconds):
+            await asyncio.sleep(1.5)
+            
+            # Check if browser was closed by user
+            if not context.pages:
+                break
+                
+            current_url = page.url.lower()
+            indicators = success_indicators.get(platform, [])
+            
+            # Check URL indicators
+            if any(ind in current_url for ind in indicators if "." in ind or "/" in ind):
+                logged_in = True
+                break
+                
+            # Check DOM selectors
+            dom_indicators = [ind for ind in indicators if ind.startswith("#") or ind.startswith(".") or " " in ind or "button" in ind]
+            for selector in dom_indicators:
+                try:
+                    el = await page.query_selector(selector)
+                    if el and await el.is_visible():
+                        logged_in = True
+                        break
+                except Exception:
+                    pass
+            if logged_in:
+                break
+                
+        if logged_in:
+            logger.info(f"User {user.email} successfully authenticated on {platform}!")
+            await asyncio.sleep(4.0)
+            await context.close()
+            await playwright_inst.stop()
+            return {"status": "success", "message": f"Successfully authenticated on {source}."}
+        else:
+            try:
+                await context.close()
+            except Exception:
+                pass
+            await playwright_inst.stop()
+            return {"status": "failed", "message": "Manual login was closed or timed out before authentication succeeded."}
+            
+    except Exception as e:
+        logger.error(f"Error during manual browser login: {e}", exc_info=True)
+        try:
+            await context.close()
+        except Exception:
+            pass
+        try:
+            await playwright_inst.stop()
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed launching login window: {str(e)}"
+        )

@@ -161,16 +161,26 @@ class AgentOrchestrator:
             except Exception as ev_err:
                 logger.error(f"Failed to create matching event in orchestrator: {ev_err}")
         
-        # 7. Queue the browser automation task in Celery if SHORTLISTED
+        # 7. Queue the browser automation task in the correct platform queue
         if app_status == "SHORTLISTED":
             try:
-                from app.tasks.application_tasks import execute_browser_application
-                execute_browser_application.delay(str(app.id))
-                logger.info(f"Orchestrator: Queued Celery browser task for app ID: {app.id} (status={app_status})")
+                from app.tasks.application_tasks import dispatch_application
+                platform = dispatch_application(str(app.id), job.source_url)
+                logger.info(
+                    f"Orchestrator: Dispatched app {app.id} to platform queue '{platform}' "
+                    f"for {job.role_title} @ {job.company_name}"
+                )
             except Exception as e:
-                logger.error(f"Failed to queue celery application task: {e}")
+                logger.error(f"Failed to dispatch application task: {e}")
+                # Fallback to generic queue
+                try:
+                    from app.tasks.application_tasks import execute_browser_application
+                    execute_browser_application.delay(str(app.id))
+                    logger.info(f"Orchestrator: Fallback — queued app {app.id} to generic applications queue")
+                except Exception as e2:
+                    logger.error(f"Fallback dispatch also failed: {e2}")
         else:
-            logger.info(f"Orchestrator: Bypassed queuing Celery task for app ID: {app.id} (status={app_status})")
+            logger.info(f"Orchestrator: App {app.id} status={app_status} — not queuing (awaiting user approval)")
 
         return {
             "status": "queued" if app_status == "SHORTLISTED" else "pending_review",

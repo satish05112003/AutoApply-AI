@@ -65,22 +65,20 @@ celerybeat-schedule*
 # Backups
 backend/backups/
 
-# Environment files
-.env
-.env.local
-.env.production
-backend/.env
+# Additional security ignores
+*.env
+credentials*.json
+token*.json
+cookies*.json
+playwright/.auth
+playwright/.sessions
+storage_state.json
+.pytest_cache/
+runtime/
+artifacts/
+backend/test_profile_1/
+backend/test_profile_2/
+*test_profile*/
 
-# OAuth / Google credentials
-credentials.json
-client_secret*.json
-token.json
 
-# Python
-__pycache__/
-*.pyc
-
-# IDE
-.vscode/
-.idea/
 

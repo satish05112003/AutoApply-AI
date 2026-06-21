@@ -63,7 +63,7 @@ class GreenhouseCrawler(BaseCrawler):
         return False
 
     async def crawl(
-        self, query: str, location: Optional[str] = None, limit: int = 100
+        self, query: str, location: Optional[str] = None, limit: int = 100, params: Optional[Dict[str, Any]] = None, **kwargs
     ) -> List[Dict[str, Any]]:
         logger.info(f"GreenhouseCrawler: crawl query='{query}' location='{location}'")
         jobs_list: List[Dict[str, Any]] = []

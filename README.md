@@ -412,15 +412,21 @@ To run the complete system, launch the services in this exact order:
    cd backend
    uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
    ```
-4. **Start Celery Worker**: Activate virtual environment and run:
+4. **Start Celery Worker**: Run from project root:
    ```bash
-   cd backend
-   celery -A app.celery_app worker --loglevel=info --pool=solo
+   .\backend\venv\Scripts\celery.exe -A app.celery_app worker --loglevel=info --pool=solo
    ```
-5. **Start Celery Beat**: Activate virtual environment and run:
+   Or from backend folder:
    ```bash
-   cd backend
-   celery -A app.celery_app beat --loglevel=info
+   .\venv\Scripts\celery.exe -A app.celery_app worker --loglevel=info --pool=solo
+   ```
+5. **Start Celery Beat**: Run from project root:
+   ```bash
+   .\backend\venv\Scripts\celery.exe -A app.celery_app beat --loglevel=info
+   ```
+   Or from backend folder:
+   ```bash
+   .\venv\Scripts\celery.exe -A app.celery_app beat --loglevel=info
    ```
 6. **Start Frontend Client**:
    ```bash

@@ -12,7 +12,7 @@ logger = logging.getLogger("autoapply_ai.crawlers.naukri")
 class NaukriCrawler(BaseCrawler):
     source = "naukri"
 
-    async def crawl(self, query: str, location: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    async def crawl(self, query: str, location: Optional[str] = None, limit: int = 50, params: Optional[Dict[str, Any]] = None, **kwargs) -> List[Dict[str, Any]]:
         """Crawl Naukri job listings using updated selectors and detail page description fetching."""
         jobs_list = []
         loc = location or "India"

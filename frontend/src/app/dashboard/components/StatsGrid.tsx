@@ -7,13 +7,17 @@ import {
   CheckCircle2, 
   AlertTriangle, 
   Award, 
-  Percent 
+  Percent,
+  Clock,
+  RefreshCw,
+  Zap,
+  Activity
 } from "lucide-react";
 
 export default function StatsGrid() {
   const { stats } = useStore();
 
-  const cards = [
+  const primaryCards = [
     {
       title: "Shortlisted",
       value: stats?.shortlisted ?? 0,
@@ -39,11 +43,11 @@ export default function StatsGrid() {
       colorClass: "text-red-400 border-red-950/30 bg-red-950/5 hover:bg-red-950/10 hover:shadow-[0_0_20px_rgba(239,68,68,0.08)]",
       glowColor: "bg-red-500",
       icon: <AlertTriangle className="w-4 h-4 text-red-400" />,
-      desc: "Requires manual review/retry"
+      desc: "Requires manual review"
     },
     {
       title: "Success Rate",
-      value: stats?.success_rate ? Math.round(stats.success_rate) : (
+      value: stats?.success_rate ?? (
         stats?.applied ? Math.round((stats.applied / ((stats.applied + stats.failed) || 1)) * 100) : 0
       ),
       suffix: "%",
@@ -63,42 +67,120 @@ export default function StatsGrid() {
     }
   ];
 
+  const operationalCards = [
+    {
+      title: "Apps/Hr Throughput",
+      value: stats?.apps_per_hour ?? 0,
+      suffix: "run/h",
+      icon: <Zap className="w-3.5 h-3.5 text-indigo-400" />,
+      desc: "Applications processed per hour"
+    },
+    {
+      title: "Subs/Hr Completion",
+      value: stats?.subs_per_hour ?? 0,
+      suffix: "sub/h",
+      icon: <Activity className="w-3.5 h-3.5 text-purple-400" />,
+      desc: "Successful submissions per hour"
+    },
+    {
+      title: "Awaiting Retry",
+      value: stats?.awaiting_retry ?? 0,
+      suffix: "apps",
+      icon: <RefreshCw className="w-3.5 h-3.5 text-orange-400" />,
+      desc: "Applications scheduled for retry"
+    },
+    {
+      title: "Avg App Duration",
+      value: stats?.avg_duration_min ?? 0,
+      suffix: "mins",
+      icon: <Clock className="w-3.5 h-3.5 text-pink-400" />,
+      desc: "Time taken to complete an application"
+    },
+    {
+      title: "CAPTCHA Rate",
+      value: stats?.captcha_rate ?? 0,
+      suffix: "%",
+      icon: <AlertTriangle className="w-3.5 h-3.5 text-yellow-500" />,
+      desc: "Rate limit/CAPTCHA block frequency"
+    }
+  ];
+
+  const platformRates = stats?.platform_rates || {};
+
   return (
-    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-      {cards.map((c, idx) => (
-        <div 
-          key={idx} 
-          className={`relative overflow-hidden group p-1.5 rounded-[1.25rem] border border-zinc-900 transition-all duration-300 transform hover:-translate-y-1 ${c.colorClass}`}
-        >
-          {/* Subtle background glow */}
-          <div className={`absolute top-0 right-0 w-24 h-24 rounded-full blur-[40px] opacity-10 transition-opacity group-hover:opacity-20 ${c.glowColor}`} />
-          
-          <div className="bg-[#07070a]/90 rounded-[calc(1.25rem-0.375rem)] p-4.5 flex flex-col justify-between h-full min-h-[110px] shadow-[inset_0_1px_1px_rgba(255,255,255,0.02)]">
+    <div className="space-y-6">
+      {/* Primary KPI Grid */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        {primaryCards.map((c, idx) => (
+          <div 
+            key={idx} 
+            className="premium-card p-5 flex flex-col justify-between h-full min-h-[120px] transition-all relative overflow-hidden group"
+          >
+            {/* Subtle glow on hover */}
+            <div className={`absolute top-0 right-0 w-20 h-20 rounded-full blur-[35px] opacity-[0.02] transition-opacity group-hover:opacity-[0.07] ${c.glowColor}`} />
+            
             <div className="flex items-center justify-between">
-              <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest font-mono">
+              <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider font-mono">
                 {c.title}
               </span>
-              <div className="p-1 rounded-lg bg-zinc-950/50 border border-zinc-900/60">
+              <div className="p-1 rounded-md bg-zinc-950/80 border border-zinc-900/40">
                 {c.icon}
               </div>
             </div>
 
             <div className="flex flex-col mt-4">
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-3xl font-bold font-mono tracking-tight text-zinc-150">
+              <div className="flex items-baseline gap-1">
+                <span className="text-2xl font-semibold tracking-tight text-white font-sans">
                   {c.value}
                 </span>
-                <span className="text-[9px] text-zinc-500 font-semibold font-mono uppercase tracking-wider">
+                <span className="text-[9px] text-zinc-500 font-mono uppercase">
                   {c.suffix}
                 </span>
               </div>
-              <span className="text-[9px] text-zinc-500 font-sans mt-1 line-clamp-1">
+              <span className="text-[10px] text-zinc-400 font-sans mt-0.5">
                 {c.desc}
               </span>
             </div>
           </div>
+        ))}
+      </div>
+
+      {/* Operational Visibility Sub-grid */}
+      <div className="premium-card p-5 space-y-4">
+        <div className="flex items-center justify-between pb-1">
+          <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-wider font-mono flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            Operational Health & Performance Center
+          </span>
         </div>
-      ))}
+
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          {operationalCards.map((oc, idx) => (
+            <div key={idx} className="p-4 bg-zinc-950/30 rounded-lg border border-zinc-900/50 flex flex-col justify-between min-h-[85px] hover:border-zinc-800 transition-all">
+              <div className="flex items-center justify-between">
+                <span className="text-[9px] text-zinc-500 font-bold uppercase tracking-wider font-mono">{oc.title}</span>
+                <div className="p-0.5 rounded bg-zinc-900/60 border border-zinc-850/40">{oc.icon}</div>
+              </div>
+              <div className="mt-3 flex items-baseline gap-1">
+                <span className="text-xl font-bold font-sans text-zinc-200">{oc.value}</span>
+                <span className="text-[8px] text-zinc-500 font-mono uppercase">{oc.suffix}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Platform specific rates badges */}
+        {Object.keys(platformRates).length > 0 && (
+          <div className="pt-2 border-t border-zinc-900/40 flex flex-wrap items-center gap-3">
+            <span className="text-[9px] text-zinc-550 font-mono uppercase font-semibold">Success Rates:</span>
+            {Object.entries(platformRates).map(([platform, rate]) => (
+              <span key={platform} className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded bg-zinc-950 border border-zinc-900/60 text-[9px] font-mono text-zinc-400">
+                <span className="capitalize">{platform}</span>: <strong className="text-emerald-400">{rate}%</strong>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -205,24 +205,32 @@ async def _async_test_application_agent_execution_and_evidence(user_uuid, resume
     mock_btn.is_visible = AsyncMock(return_value=True)
     
     mock_page.query_selector = AsyncMock(return_value=mock_btn)
+    mock_page.query_selector_all = AsyncMock(return_value=[])
+    mock_page.inner_text = AsyncMock(return_value="Thank you for applying!")
+    mock_page.frames = []
     mock_page.wait_for_load_state = AsyncMock()
     mock_page.content = AsyncMock(return_value="<body>Thank you for applying!</body>")
     
     mock_body = MagicMock()
     mock_body.inner_text = AsyncMock(return_value="Thank you for applying!")
-    mock_page.query_selector.side_effect = lambda selector: mock_body if selector == "body" else mock_btn
+    
+    async def mock_qs(selector):
+        return mock_body if selector == "body" else mock_btn
+    mock_page.query_selector.side_effect = mock_qs
     
     from app.database import SessionLocal
     async with SessionLocal() as db:
         agent = ApplicationAgent(user_id=user_uuid, db=db)
         
         with patch("app.browser.browser_pool.browser_pool.acquire_page") as mock_acquire, \
-             patch("app.services.storage_service.StorageService.upload_file") as mock_upload, \
-             patch("app.services.storage_service.StorageService.download_file") as mock_download, \
-             patch("app.browser.form_handler.FormHandler.fill_fields") as mock_fill:
+             patch("app.services.storage_service.StorageService.upload_file", new_callable=AsyncMock) as mock_upload, \
+             patch("app.services.storage_service.StorageService.download_file", new_callable=AsyncMock) as mock_download, \
+             patch("app.browser.form_handler.FormHandler.extract_form_fields", new_callable=AsyncMock) as mock_extract, \
+             patch("app.browser.form_handler.FormHandler.fill_fields", new_callable=AsyncMock) as mock_fill:
              
             mock_acquire.return_value.__aenter__.return_value = mock_page
             mock_download.return_value = b"resume_bytes"
+            mock_extract.return_value = [{"selector": "input[name='first_name']", "type": "text", "required": True}]
             mock_fill.return_value = 1
             
             agent_result = await agent.run({"application_id": app_id})
@@ -349,10 +357,17 @@ def test_retry_engine_state_and_celery_retry():
         assert "Browser context crashed" in app_rec[2]
     sync_engine.dispose()
 
+    # Set attempts = 0 so backoff filter is bypassed and it retries instantly
+    sync_engine2 = create_engine(sync_url, isolation_level="AUTOCOMMIT")
+    with sync_engine2.connect() as conn:
+        conn.execute(text("UPDATE applications.applications SET attempts = 0 WHERE id = :aid"), {"aid": app_id})
+    sync_engine2.dispose()
+
     # Verify celery retry logic runs cleanly
     import asyncio
     from app.tasks.application_tasks import _async_scheduled_retry_pending_applications
-    with patch("app.tasks.application_tasks.execute_browser_application.delay") as mock_delay:
+    with patch("app.tasks.application_tasks.execute_browser_application.delay") as mock_delay, \
+         patch("app.redis_client.redis_client.client.llen", return_value=0):
         msg = asyncio.run(run_with_engine_cleanup(_async_scheduled_retry_pending_applications()))
         assert "Triggered retry execution" in msg
         mock_delay.assert_any_call(app_id)

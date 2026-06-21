@@ -120,11 +120,11 @@ $BackendCmd = "cd '$BackendDir'; `$env:BACKEND_PORT=$BackendPort; `$env:FRONTEND
 Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit", "-Command", $BackendCmd -WindowStyle Normal
 
 # Celery Worker: spawn in its own terminal window
-$WorkerCmd = "cd '$BackendDir'; .\venv\Scripts\celery -A app.celery_app.celery_app worker --loglevel=info -P solo"
+$WorkerCmd = "cd '$BackendDir'; .\venv\Scripts\celery.exe -A app.celery_app.celery_app worker --loglevel=info -P solo"
 Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit", "-Command", $WorkerCmd -WindowStyle Normal
 
 # Celery Beat: spawn in its own terminal window
-$BeatCmd = "cd '$BackendDir'; .\venv\Scripts\celery -A app.celery_app.celery_app beat --loglevel=info"
+$BeatCmd = "cd '$BackendDir'; .\venv\Scripts\celery.exe -A app.celery_app.celery_app beat --loglevel=info"
 Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit", "-Command", $BeatCmd -WindowStyle Normal
 
 # Give backend a moment to bind the socket

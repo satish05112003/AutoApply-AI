@@ -125,12 +125,10 @@ async def _async_execute_browser_application(application_id: str) -> str:
                 )
                 return err_msg
     finally:
+        # DO NOT close the browser pool here — the persistent Edge session must
+        # stay alive so the next application task reuses the same logged-in context.
+        # Only clean up the DB engine for this event-loop.
         from app.database import close_current_loop_engine
-        from app.browser.browser_pool import browser_pool
-        try:
-            await browser_pool.close_current_loop_pool()
-        except Exception:
-            pass
         try:
             await close_current_loop_engine()
         except Exception:
@@ -249,11 +247,6 @@ async def _async_scheduled_retry_pending_applications() -> str:
                 return err_msg
     finally:
         from app.database import close_current_loop_engine
-        from app.browser.browser_pool import browser_pool
-        try:
-            await browser_pool.close_current_loop_pool()
-        except Exception:
-            pass
         try:
             await close_current_loop_engine()
         except Exception:
@@ -364,3 +357,94 @@ async def _async_scheduled_recover_stuck_applications() -> str:
         except Exception:
             pass
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-Platform Dedicated Task Dispatchers
+# Each runs on its own Celery queue so LinkedIn's slow multi-step flow
+# doesn't block Greenhouse/Lever/Ashby/Workday applications.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_platform_task(platform_name: str):
+    """
+    Factory: creates a named Celery task for a specific platform queue.
+
+    The task name is set via the `name=` kwarg passed directly to the
+    decorator — this is the ONLY correct way in Celery. Assigning
+    task.__name__ after decoration raises AttributeError because `name`
+    is a read-only property on BaseTask.
+    """
+    task_name = f"app.tasks.application_tasks.execute_{platform_name}_application"
+
+    @celery_task_decorator(name=task_name)
+    def _platform_task(application_id: str) -> str:
+        import asyncio
+        return asyncio.run(_async_execute_browser_application(application_id))
+
+    return _platform_task
+
+
+
+execute_linkedin_application = _make_platform_task("linkedin")
+execute_indeed_application   = _make_platform_task("indeed")
+execute_naukri_application   = _make_platform_task("naukri")
+execute_unstop_application   = _make_platform_task("unstop")
+execute_ats_application      = _make_platform_task("ats")
+execute_workday_application  = _make_platform_task("workday")
+execute_portal_application   = _make_platform_task("portal")
+
+
+# Platform → queue routing map
+_PLATFORM_TASK_MAP = {
+    "linkedin":  execute_linkedin_application,
+    "indeed":    execute_indeed_application,
+    "naukri":    execute_naukri_application,
+    "unstop":    execute_unstop_application,
+    "greenhouse": execute_ats_application,
+    "lever":     execute_ats_application,
+    "ashby":     execute_ats_application,
+    "workday":   execute_workday_application,
+    "wellfound": execute_portal_application,
+}
+
+_URL_PLATFORM_MAP = {
+    "linkedin.com":          "linkedin",
+    "indeed.com":            "indeed",
+    "naukri.com":            "naukri",
+    "unstop.com":            "unstop",
+    "greenhouse.io":         "greenhouse",
+    "lever.co":              "lever",
+    "ashbyhq.com":           "ashby",
+    "myworkdayjobs.com":     "workday",
+    "workday.com":           "workday",
+    "wellfound.com":         "wellfound",
+    "angel.co":              "wellfound",
+}
+
+
+def dispatch_application(application_id: str, source_url: str) -> str:
+    """
+    Dispatch an application to the correct platform-specific Celery queue.
+
+    Args:
+        application_id: UUID string of the Application record
+        source_url: Job posting URL used to determine platform
+
+    Returns:
+        Name of the queue the task was dispatched to
+    """
+    url_lower = (source_url or "").lower()
+    platform = "portal"  # default
+
+    for domain, plat in _URL_PLATFORM_MAP.items():
+        if domain in url_lower:
+            platform = plat
+            break
+
+    task_fn = _PLATFORM_TASK_MAP.get(platform, execute_browser_application)
+    task_fn.delay(application_id)
+
+    logger.info(
+        f"dispatch_application: app_id={application_id} platform={platform} "
+        f"queue={task_fn.name} url={source_url[:80] if source_url else 'N/A'}"
+    )
+    return platform

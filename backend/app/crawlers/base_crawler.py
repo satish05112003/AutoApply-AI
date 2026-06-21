@@ -162,7 +162,7 @@ class BaseCrawler:
         self.browser_pool = browser_pool or bp
 
     async def crawl(
-        self, query: str, location: Optional[str] = None, limit: int = 100
+        self, query: str, location: Optional[str] = None, limit: int = 100, params: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """
         Crawl a job board for a query and location.

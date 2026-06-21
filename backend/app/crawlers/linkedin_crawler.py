@@ -14,7 +14,7 @@ class LinkedInCrawler(BaseCrawler):
     # Time filter param: r86400 = last 24h, r604800 = last 7 days
     TIME_FILTER = "r604800"  # 7 days
 
-    async def crawl(self, query: str, location: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    async def crawl(self, query: str, location: Optional[str] = None, limit: int = 50, params: Optional[Dict[str, Any]] = None, **kwargs) -> List[Dict[str, Any]]:
         """Crawl LinkedIn public guest jobs search feed with pagination and delays."""
         jobs_list = []
         loc = location or "United States"

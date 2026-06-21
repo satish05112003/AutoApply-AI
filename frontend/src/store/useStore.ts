@@ -12,6 +12,13 @@ interface AppState {
     avg_match_score: number;
     success_rate: number;
     status_distribution: Record<string, number>;
+    apps_per_hour?: number;
+    subs_per_hour?: number;
+    awaiting_retry?: number;
+    avg_duration_min?: number;
+    captcha_rate?: number;
+    platform_rates?: Record<string, number>;
+    failure_rate?: number;
   };
   logs: string[];
   notifications: any[];
@@ -36,6 +43,7 @@ interface AppState {
     email_monitoring_running: boolean;
     agent_mode: string;
     agent_enabled: boolean;
+    redis_connected?: boolean;
   } | null;
   systemHealth: {
     status: string;
@@ -53,7 +61,10 @@ interface AppState {
       active_applications: number;
       submitted_today: number;
     };
+    queues?: Record<string, number>;
+    workers?: Record<string, string>;
   } | null;
+  platformSessions: Record<string, boolean>;
   
   // Actions
   setToken: (token: string | null) => void;
@@ -89,6 +100,8 @@ interface AppState {
   retryApplication: (id: string) => Promise<boolean>;
   updateApplicationStatus: (id: string, status: string) => Promise<boolean>;
   purgeQueues: () => Promise<boolean>;
+  fetchPlatformSessions: () => Promise<void>;
+  connectPlatform: (platform: string) => Promise<boolean>;
   addLogLine: (message: string) => void;
   clearLogs: () => void;
 }
@@ -103,7 +116,14 @@ export const useStore = create<AppState>((set, get) => ({
     failed: 0,
     avg_match_score: 0,
     success_rate: 0,
-    status_distribution: {}
+    status_distribution: {},
+    apps_per_hour: 0,
+    subs_per_hour: 0,
+    awaiting_retry: 0,
+    avg_duration_min: 0,
+    captcha_rate: 0,
+    platform_rates: {},
+    failure_rate: 0
   },
   logs: [
     "[System] Agent pipeline listening for events...",
@@ -127,6 +147,12 @@ export const useStore = create<AppState>((set, get) => ({
   agentStatus: null,
   systemHealth: null,
   notifications: [],
+  platformSessions: {
+    linkedin: false,
+    indeed: false,
+    naukri: false,
+    unstop: false
+  },
 
   setToken: (token) => {
     if (token) localStorage.setItem("token", token);
@@ -748,6 +774,50 @@ export const useStore = create<AppState>((set, get) => ({
       return false;
     } catch (e) {
       console.error(e);
+      return false;
+    }
+  },
+
+  fetchPlatformSessions: async () => {
+    const token = get().token;
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_BASE}/system/browser/sessions`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.status === 200) {
+        const platformSessions = await res.json();
+        set({ platformSessions });
+      }
+    } catch (e) {
+      console.error("[Store] Error fetching platform sessions:", e);
+    }
+  },
+
+  connectPlatform: async (platform: string) => {
+    const token = get().token;
+    if (!token) return false;
+    try {
+      get().addLogLine(`[User] Launching login session window for ${platform}...`);
+      const res = await fetch(`${API_BASE}/system/browser/login?source=${platform}`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.status === 200) {
+        const data = await res.json();
+        if (data.status === "success") {
+          get().addLogLine(`[System] Platform ${platform} login succeeded.`);
+          await get().fetchPlatformSessions();
+          return true;
+        } else {
+          get().addLogLine(`[Warning] Platform ${platform} login: ${data.message}`);
+          return false;
+        }
+      }
+      return false;
+    } catch (e) {
+      console.error(e);
+      get().addLogLine(`[Error] Platform ${platform} login failed.`);
       return false;
     }
   },
