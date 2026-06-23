@@ -121,6 +121,27 @@ async def get_analytics_overview(user: User = Depends(get_current_user), db: Asy
     success_rate = round((total_applied / total_runs * 100.0) if total_runs > 0 else 0.0, 1)
     failure_rate = round((total_failed / total_runs * 100.0) if total_runs > 0 else 0.0, 1)
 
+    # 8. Additional metrics for critical automation dashboard
+    stmt_li = select(func.count(JobPosting.id)).where(JobPosting.source == 'linkedin')
+    stmt_nk = select(func.count(JobPosting.id)).where(JobPosting.source == 'naukri')
+    stmt_id = select(func.count(JobPosting.id)).where(JobPosting.source == 'indeed')
+    
+    li_found = (await db.execute(stmt_li)).scalar() or 0
+    nk_found = (await db.execute(stmt_nk)).scalar() or 0
+    id_found = (await db.execute(stmt_id)).scalar() or 0
+    
+    stmt_skipped = select(func.count(Application.id)).where(
+        Application.user_id == user.id,
+        Application.status.like("SKIPPED_%")
+    )
+    apps_skipped = (await db.execute(stmt_skipped)).scalar() or 0
+    
+    stmt_dup = select(func.count(Application.id)).where(
+        Application.user_id == user.id,
+        Application.status == "SKIPPED_DUPLICATE"
+    )
+    dup_prevented = (await db.execute(stmt_dup)).scalar() or 0
+
     return {
         "shortlisted": total_shortlisted,
         "applied": total_applied,
@@ -134,6 +155,14 @@ async def get_analytics_overview(user: User = Depends(get_current_user), db: Asy
         "apps_per_hour": apps_per_hour,
         "avg_duration_min": avg_duration_min,
         "platform_rates": platform_rates,
+        "linkedin_jobs_found": li_found,
+        "naukri_jobs_found": nk_found,
+        "indeed_jobs_found": id_found,
+        "applications_submitted": total_applied,
+        "applications_failed": total_failed,
+        "applications_skipped": apps_skipped,
+        "duplicate_jobs_prevented": dup_prevented,
+        "jobs_applied_today": sub_today,
         "status_distribution": {
             "discovered": counts.get("DISCOVERED", 0),
             "shortlisted": total_shortlisted,

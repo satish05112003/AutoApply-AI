@@ -33,6 +33,16 @@ async def _async_execute_browser_application(application_id: str) -> str:
 
     logger.info(f"Starting Celery application task: app_id={application_id} task={task_id} worker={worker_id} loop={id(loop)}")
 
+    # ── Automation Guard ────────────────────────────────────────────────────
+    from app.automation_state import is_automation_enabled
+    if not is_automation_enabled():
+        msg = f"[AutomationGuard] execute_browser_application BLOCKED — automation engine is OFF. app_id={application_id}"
+        logger.info(msg)
+        return msg
+    # ────────────────────────────────────────────────────────────────────────
+
+    platform = "other"
+
     try:
         async with SessionLocal() as db:
             tx_id = id(db.get_transaction()) if db.in_transaction() else None
@@ -55,6 +65,69 @@ async def _async_execute_browser_application(application_id: str) -> str:
                 return err
 
             user_id = str(app.user_id)
+
+            # Concurrency limit checks (global limit 5, platform-specific limit max 1 for linkedin/indeed/naukri)
+            from app.models.jobs import JobPosting
+            job_stmt = select(JobPosting).where(JobPosting.id == app.job_id)
+            job_result = await db.execute(job_stmt)
+            job = job_result.scalars().first()
+            if job:
+                url_lower = (job.source_url or "").lower()
+                if "linkedin.com" in url_lower:
+                    platform = "linkedin"
+                elif "indeed.com" in url_lower:
+                    platform = "indeed"
+                elif "naukri.com" in url_lower:
+                    platform = "naukri"
+                elif "unstop.com" in url_lower:
+                    platform = "unstop"
+                elif "greenhouse.io" in url_lower:
+                    platform = "greenhouse"
+                elif "lever.co" in url_lower:
+                    platform = "lever"
+                elif "ashbyhq.com" in url_lower:
+                    platform = "ashby"
+
+            from app.redis_client import redis_client
+            r_client = redis_client.client
+            active_key = f"automation:active_app:{application_id}"
+            r_client.set(active_key, "active", ex=600)  # 10 minutes expiry
+
+            platform_active_key = f"automation:active_platform_app:{platform}:{application_id}"
+            r_client.set(platform_active_key, "active", ex=600)
+
+            while True:
+                # 1. Global limit check (max 5)
+                active_keys = r_client.keys("automation:active_app:*")
+                if len(active_keys) > 5:
+                    import random
+                    wait_sec = random.uniform(2.0, 5.0)
+                    logger.info(f"Concurrency limit (5 apps max) reached. {len(active_keys)} running. Waiting {wait_sec:.1f}s...")
+                    await asyncio.sleep(wait_sec)
+                    r_client.expire(active_key, 600)
+                    r_client.expire(platform_active_key, 600)
+                    continue
+
+                # 2. Platform-specific limit check (max 1 for linkedin, indeed, naukri)
+                if platform in ["linkedin", "indeed", "naukri"]:
+                    plat_keys = [k.decode('utf-8') if isinstance(k, bytes) else k for k in r_client.keys(f"automation:active_platform_app:{platform}:*")]
+                    plat_ids = [k.split(":")[-1] for k in plat_keys]
+                    if len(plat_keys) > 1 and application_id not in plat_ids:
+                        r_client.set(platform_active_key, "active", ex=600)
+                        plat_keys = [k.decode('utf-8') if isinstance(k, bytes) else k for k in r_client.keys(f"automation:active_platform_app:{platform}:*")]
+                        plat_ids = [k.split(":")[-1] for k in plat_keys]
+
+                    plat_ids.sort()
+                    if len(plat_ids) > 1 and plat_ids[0] != application_id:
+                        import random
+                        wait_sec = random.uniform(2.0, 5.0)
+                        logger.info(f"Concurrency limit (max 1 {platform} app) reached. Queue position: {plat_ids.index(application_id)}. Waiting {wait_sec:.1f}s...")
+                        await asyncio.sleep(wait_sec)
+                        r_client.expire(active_key, 600)
+                        r_client.expire(platform_active_key, 600)
+                        continue
+
+                break
 
             try:
                 # Instantiate and run ApplicationAgent
@@ -125,6 +198,14 @@ async def _async_execute_browser_application(application_id: str) -> str:
                 )
                 return err_msg
     finally:
+        # Clean up active concurrency keys
+        try:
+            from app.redis_client import redis_client
+            redis_client.client.delete(f"automation:active_app:{application_id}")
+            redis_client.client.delete(f"automation:active_platform_app:{platform}:{application_id}")
+        except Exception:
+            pass
+
         # DO NOT close the browser pool here — the persistent Edge session must
         # stay alive so the next application task reuses the same logged-in context.
         # Only clean up the DB engine for this event-loop.
@@ -152,6 +233,12 @@ async def _async_scheduled_retry_pending_applications() -> str:
     loop = asyncio.get_running_loop()
     task_id = current_task.request.id if current_task and current_task.request else "sync"
     worker_id = current_task.request.hostname if current_task and current_task.request else "sync"
+
+    # ── Automation Guard ────────────────────────────────────────────────────
+    from app.automation_state import is_automation_enabled
+    if not is_automation_enabled():
+        return "[AutomationGuard] scheduled_retry_pending_applications BLOCKED — automation engine is OFF."
+    # ────────────────────────────────────────────────────────────────────────
 
     logger.info(f"scheduled_retry_pending_applications: Checking for pending retries... task={task_id} worker={worker_id} loop={id(loop)}")
 
@@ -270,6 +357,12 @@ async def _async_scheduled_recover_stuck_applications() -> str:
     loop = asyncio.get_running_loop()
     task_id = current_task.request.id if current_task and current_task.request else "sync"
     worker_id = current_task.request.hostname if current_task and current_task.request else "sync"
+
+    # ── Automation Guard ────────────────────────────────────────────────────
+    from app.automation_state import is_automation_enabled
+    if not is_automation_enabled():
+        return "[AutomationGuard] scheduled_recover_stuck_applications BLOCKED — automation engine is OFF."
+    # ────────────────────────────────────────────────────────────────────────
 
     logger.info(f"scheduled_recover_stuck_applications: Starting stuck applications recovery scan. task={task_id} worker={worker_id}")
 
@@ -448,3 +541,103 @@ def dispatch_application(application_id: str, source_url: str) -> str:
         f"queue={task_fn.name} url={source_url[:80] if source_url else 'N/A'}"
     )
     return platform
+
+@celery_task_decorator
+def cleanup_browser_tabs() -> str:
+    """Periodic Celery task to clean up blank, duplicate, and orphan automation tabs every 30 seconds."""
+    import asyncio
+    return asyncio.run(_async_cleanup_browser_tabs())
+
+async def _async_cleanup_browser_tabs() -> str:
+    from app.browser.browser_pool import browser_pool, _get_page_target_id, _find_page_by_target_id
+    from app.redis_client import redis_client
+    import time
+    
+    r_client = redis_client.client
+    logger.info("cleanup_browser_tabs: Starting periodic browser tab cleanup...")
+    
+    keys = r_client.keys("automation:platform_tabs:*")
+    if not keys:
+        keys = [b"automation:platform_tabs:__shared__"]
+        
+    cleaned_blank = 0
+    cleaned_dup = 0
+    cleaned_orphan = 0
+    
+    for key in keys:
+        key_str = key.decode('utf-8') if isinstance(key, bytes) else key
+        user_id = key_str.split(":")[-1]
+        
+        try:
+            context = await browser_pool.ensure_context(user_id)
+        except Exception as e:
+            logger.debug(f"cleanup_browser_tabs: No active browser context for user {user_id}: {e}")
+            continue
+            
+        hash_key = f"automation:platform_tabs:{user_id}"
+        active_set_key = f"automation:active_tabs:{user_id}"
+        
+        # Load registry
+        platform_tabs = r_client.hgetall(hash_key)
+        platform_tabs = {k.decode('utf-8') if isinstance(k, bytes) else k: v.decode('utf-8') if isinstance(v, bytes) else v for k, v in platform_tabs.items()}
+        
+        active_tabs = r_client.smembers(active_set_key)
+        active_tabs = {t.decode('utf-8') if isinstance(t, bytes) else t for t in active_tabs}
+        
+        seen_platforms = set()
+        pages = list(context.pages)
+        
+        # Step 1: Clean up blank/empty tabs instantly
+        for p in list(pages):
+            try:
+                url_lower = p.url.lower().strip()
+                title = p.title() or ""
+                if (not url_lower or 
+                    url_lower in ["about:blank", "chrome://newtab", "edge://newtab", "data:text/html"] or 
+                    title.strip() == ""):
+                    
+                    if len(context.pages) > 1:
+                        logger.info(f"[BLANK TAB REMOVED] Closing blank/empty tab: {p.url}")
+                        await p.close()
+                        pages.remove(p)
+                        cleaned_blank += 1
+            except Exception as pe:
+                logger.debug(f"cleanup_browser_tabs: Error checking/closing blank tab: {pe}")
+                
+        # Step 2: Check target IDs for remaining pages
+        for p in list(pages):
+            try:
+                target_id = await _get_page_target_id(p)
+                
+                # Check duplicate platform tabs
+                platform_for_target = None
+                for plat, tid in platform_tabs.items():
+                    if tid == target_id:
+                        platform_for_target = plat
+                        break
+                        
+                if platform_for_target:
+                    if platform_for_target in seen_platforms:
+                        if len(context.pages) > 1:
+                            logger.info(f"[DUPLICATE TAB REMOVED] Closing duplicate tab for {platform_for_target} (target: {target_id})")
+                            await p.close()
+                            pages.remove(p)
+                            r_client.srem(active_set_key, target_id)
+                            cleaned_dup += 1
+                    else:
+                        seen_platforms.add(platform_for_target)
+                else:
+                    # Not registered to any platform. Check if it's in active_tabs (orphan automation tab)
+                    if target_id in active_tabs:
+                        if len(context.pages) > 1:
+                            logger.info(f"[TAB CLOSED] Closing orphan automation tab (target: {target_id}, URL: {p.url})")
+                            await p.close()
+                            pages.remove(p)
+                            r_client.srem(active_set_key, target_id)
+                            cleaned_orphan += 1
+            except Exception as pe:
+                logger.debug(f"cleanup_browser_tabs: Error during page target check: {pe}")
+                
+    msg = f"Finished tab cleanup. Blank removed: {cleaned_blank}, Duplicates removed: {cleaned_dup}, Orphans removed: {cleaned_orphan}"
+    logger.info(msg)
+    return msg

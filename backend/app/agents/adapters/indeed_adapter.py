@@ -118,6 +118,7 @@ class IndeedAdapter(BaseAdapter):
             await self.save_screenshot("no_apply_btn")
             return {"status": "FAILED", "error": "Indeed Apply button not found"}
 
+        self._existing_pages = set(self.page.context.pages)
         await self.log_info("[Indeed] Clicking Apply button...")
         await apply_btn.click()
         await asyncio.sleep(3.5)
@@ -233,11 +234,12 @@ class IndeedAdapter(BaseAdapter):
 
     async def _resolve_apply_context(self):
         """Return (target_page, smartapply_frame). Handles new tab popup."""
-        await asyncio.sleep(1.0)
-        # New tab?
-        if len(self.page.context.pages) > 1:
-            new_page = self.page.context.pages[-1]
-            await new_page.bring_to_front()
+        await asyncio.sleep(2.0)
+        # New tab? Check if any page was opened that wasn't there before
+        existing = getattr(self, "_existing_pages", set())
+        new_pages = [p for p in self.page.context.pages if p not in existing]
+        if new_pages:
+            new_page = new_pages[-1]
             await asyncio.sleep(2.0)
             frame = await self._find_smartapply_frame(new_page)
             return new_page, frame

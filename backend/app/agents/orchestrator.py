@@ -20,6 +20,7 @@ class AgentOrchestrator:
         """Orchestrate the entire multi-agent loop for a single job posting."""
         logger.info(f"Orchestrator: Ingesting job '{job_id}' for candidate '{self.user_id}'")
         job_db_id = UUID(job_id) if isinstance(job_id, str) else job_id
+        u_id = UUID(self.user_id) if isinstance(self.user_id, str) else self.user_id
 
         # 1. Fetch JobPosting details
         stmt = select(JobPosting).where(JobPosting.id == job_db_id)
@@ -27,6 +28,44 @@ class AgentOrchestrator:
         job = res.scalars().first()
         if not job:
             return {"status": "error", "message": "Job posting not found."}
+
+        # Check if a duplicate application already exists for this user (matching company, title, location, source)
+        from sqlalchemy import func
+        dup_stmt = select(Application).join(JobPosting).where(
+            Application.user_id == u_id,
+            func.lower(func.trim(JobPosting.company_name)) == func.lower(func.trim(job.company_name)),
+            func.lower(func.trim(JobPosting.role_title)) == func.lower(func.trim(job.role_title)),
+            func.lower(func.trim(JobPosting.location)) == func.lower(func.trim(job.location)),
+            func.lower(func.trim(JobPosting.source)) == func.lower(func.trim(job.source)),
+            Application.job_id != job_db_id
+        )
+        dup_res = await self.db.execute(dup_stmt)
+        dup_app = dup_res.scalars().first()
+        if dup_app:
+            logger.info(f"Orchestrator: Duplicate application detected (status={dup_app.status}) for {job.role_title} at {job.company_name}. Skipping.")
+            
+            # Create a skipped duplicate application record if it doesn't exist
+            curr_app_stmt = select(Application).where(Application.user_id == u_id, Application.job_id == job_db_id)
+            curr_app_res = await self.db.execute(curr_app_stmt)
+            curr_app = curr_app_res.scalars().first()
+            if not curr_app:
+                curr_app = Application(
+                    user_id=u_id,
+                    job_id=job_db_id,
+                    resume_id=dup_app.resume_id,
+                    match_score=dup_app.match_score,
+                    status="SKIPPED_DUPLICATE",
+                    agent_decision="SKIP",
+                    agent_confidence=dup_app.agent_confidence,
+                    notes=f"SKIPPED: Duplicate application detected with status={dup_app.status}. Matching job ID={dup_app.job_id}"
+                )
+                self.db.add(curr_app)
+                await self.db.commit()
+            
+            return {
+                "status": "skipped",
+                "reasoning": f"Duplicate application detected with status={dup_app.status}"
+            }
 
         # 2. Run Job Description Analysis if not already parsed
         if not job.job_description_parsed:

@@ -20,8 +20,8 @@ class IndeedCrawler(BaseCrawler):
         search_location = loc.replace(" ", "+")
         
         # Build Indeed search URL
-        # fromage=1 indicates past 24 hours
-        search_url = f"https://www.indeed.com/jobs?q={search_query}&l={search_location}&fromage=1"
+        # fromage=7 indicates past 7 days
+        search_url = f"https://www.indeed.com/jobs?q={search_query}&l={search_location}&fromage=7"
         
         # If specific params are provided, apply them
         params = params or {}

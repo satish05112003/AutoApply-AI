@@ -147,6 +147,7 @@ async def websocket_broadcast_loop():
                 pass
             
             # Format payload structure
+            from app.automation_state import is_automation_enabled as _is_auto_enabled
             status_payload = {
                 "postgres": "ONLINE" if not db_metrics["error"] else "OFFLINE",
                 "redis": redis_metrics["redis_online"],
@@ -163,6 +164,7 @@ async def websocket_broadcast_loop():
                     "pending": db_metrics["pending_count"]
                 },
                 "uptime": uptime,
+                "automation_enabled": _is_auto_enabled(),
                 
                 # Compatibility fields
                 "status": "healthy" if (not db_metrics["error"] and redis_metrics["redis_online"] == "ONLINE" and active_workers_count > 0) else "unhealthy",

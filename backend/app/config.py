@@ -47,9 +47,10 @@ class Settings(BaseSettings):
 
     # Browser Pool Settings
     PLAYWRIGHT_HEADLESS: bool = Field(default=True)
-    BROWSER_HEADLESS: bool = Field(default=False)
+    BROWSER_HEADLESS: bool = Field(default=False)   # Must be False — auth sessions require a visible browser
     BROWSER_POOL_SIZE: int = Field(default=3)
     BROWSER_TIMEOUT_MS: int = Field(default=30000)
+    BROWSER_MAX_TABS: int = Field(default=3)         # Max concurrent automation tabs per user
     BROWSER_CHANNEL: str = Field(default="msedge")  # msedge | chrome | chromium (empty string = bundled Chromium)
 
     # Google OAuth2 Settings (Multi-Tenant — one spreadsheet per user)

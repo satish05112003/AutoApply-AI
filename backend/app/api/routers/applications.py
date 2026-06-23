@@ -53,10 +53,10 @@ async def approve_application(id: UUID, user: User = Depends(get_current_user), 
     await db.commit()
 
     try:
-        from app.tasks.application_tasks import execute_browser_application
-        # Dispatch Celery task
-        execute_browser_application.delay(str(app.id))
-        logger.info(f"Approved and queued Celery submission runner for app ID: {app.id}")
+        from app.tasks.application_tasks import dispatch_application
+        # Route to platform-specific queue
+        dispatch_application(str(app.id), app.job_posting.source_url)
+        logger.info(f"Approved and queued platform-specific Celery submission runner for app ID: {app.id}")
     except Exception as e:
         logger.error(f"Failed queueing approved application task: {e}")
         
@@ -202,10 +202,10 @@ async def retry_application(
     await db.refresh(app)
     
     try:
-        from app.tasks.application_tasks import execute_browser_application
-        # Dispatch Celery task
-        execute_browser_application.delay(str(app.id))
-        logger.info(f"Manually retried and enqueued Celery submission runner for app ID: {app.id}")
+        from app.tasks.application_tasks import dispatch_application
+        # Route to platform-specific queue
+        dispatch_application(str(app.id), app.job_posting.source_url)
+        logger.info(f"Manually retried and enqueued platform-specific Celery submission runner for app ID: {app.id}")
     except Exception as e:
         logger.error(f"Failed queueing manually retried application task: {e}")
         
@@ -258,9 +258,10 @@ async def update_application_status(
     )
     if should_enqueue:
         try:
-            from app.tasks.application_tasks import execute_browser_application
-            execute_browser_application.delay(str(app.id))
-            logger.info(f"Kanban transition to {target_status} enqueued Celery runner for app ID: {app.id}")
+            from app.tasks.application_tasks import dispatch_application
+            # Route to platform-specific queue
+            dispatch_application(str(app.id), app.job_posting.source_url)
+            logger.info(f"Kanban transition to {target_status} enqueued platform-specific Celery runner for app ID: {app.id}")
         except Exception as e:
             logger.error(f"Failed queueing task from Kanban transition: {e}")
             

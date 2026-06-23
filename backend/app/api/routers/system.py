@@ -449,34 +449,78 @@ async def get_browser_sessions(
     return platforms
 
 
+
+# ---------------------------------------------------------------------------
+# Automation Engine Master Toggle
+# ---------------------------------------------------------------------------
+
+@router.get("/automation-status")
+async def get_automation_status(
+    user: User = Depends(get_current_user)
+):
+    """Return the current master automation engine state (RUNNING / IDLE)."""
+    from app.automation_state import get_automation_status
+    return get_automation_status()
+
+
+@router.post("/automation/start")
+async def start_automation(
+    user: User = Depends(get_current_user)
+):
+    """
+    Enable the automation engine.
+    This is the ONLY way to allow crawlers, agents, and browser automation to run.
+    State is persisted in Redis. Survives worker restarts within the same Redis instance.
+    """
+    from app.automation_state import enable_automation
+    result = enable_automation()
+    logger.warning(f"[System] Automation engine STARTED by user {user.email}.")
+    return result
+
+
+@router.post("/automation/stop")
+async def stop_automation(
+    user: User = Depends(get_current_user)
+):
+    """
+    Disable the automation engine.
+    All crawlers, agents, and browser automation will refuse to execute until re-enabled.
+    """
+    from app.automation_state import disable_automation
+    result = disable_automation()
+    logger.warning(f"[System] Automation engine STOPPED by user {user.email}.")
+    return result
+
+
 @router.post("/browser/login")
 async def run_manual_browser_login(
     source: str,
     user: User = Depends(get_current_user)
 ):
     """
-    Launch a headful browser session for manual authentication.
-    Saves context cookies under storage/browser_profiles/user_{user_id}
+    Launch a headful browser tab for manual authentication.
+    Uses the SAME persistent Edge context as the automation engine, so
+    login cookies are saved into the user's profile and immediately
+    available to all job-application tasks.
     """
-    import playwright.async_api
-    import os
     import asyncio
-    
+    from app.browser.browser_pool import browser_pool
+
     # 1. Map platform to login URL and success indicators
     login_urls = {
         "linkedin": "https://www.linkedin.com/login",
-        "indeed": "https://www.indeed.com/account/login",
-        "naukri": "https://www.naukri.com/nlogin/login",
-        "unstop": "https://unstop.com/auth/login"
+        "indeed":   "https://www.indeed.com/account/login",
+        "naukri":   "https://www.naukri.com/nlogin/login",
+        "unstop":   "https://unstop.com/auth/login"
     }
-    
+
     success_indicators = {
         "linkedin": ["linkedin.com/feed", "linkedin.com/mynetwork", "#global-nav"],
-        "indeed": ["indeed.com/myjobs", "indeed.com/resume", "button.gnav-UserIcon-icon", "nav.gnav"],
-        "naukri": ["naukri.com/mnjuser/homepage", "naukri.com/mnjuser/profile", ".profile-status", "#homepage-link"],
-        "unstop": ["unstop.com/dashboard", "unstop.com/profile", ".user-profile-menu", "button.profile-btn"]
+        "indeed":   ["indeed.com/myjobs", "indeed.com/resume", "button.gnav-UserIcon-icon", "nav.gnav"],
+        "naukri":   ["naukri.com/mnjuser/homepage", "naukri.com/mnjuser/profile", ".profile-status", "#homepage-link"],
+        "unstop":   ["unstop.com/dashboard", "unstop.com/profile", ".user-profile-menu", "button.profile-btn"]
     }
-    
+
     platform = source.lower().strip()
     url = login_urls.get(platform)
     if not url:
@@ -484,97 +528,67 @@ async def run_manual_browser_login(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsupported platform for manual login: {source}"
         )
-        
-    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    profiles_dir = os.path.join(base_dir, "storage", "browser_profiles")
-    os.makedirs(profiles_dir, exist_ok=True)
-    user_dir = os.path.join(profiles_dir, f"user_{user.id}")
-    
-    from app.config import settings as _settings
-    
-    logger.info(f"Launching headful browser for manual login on {platform} using dir: {user_dir}")
-    
-    playwright_inst = await playwright.async_api.async_playwright().start()
+
+    user_id_str = str(user.id)
+    logger.info(f"[BrowserManager] Opening login tab for user {user.email} on {platform}")
+
     try:
-        browser_channel = _settings.BROWSER_CHANNEL or None
-        logger.info(f"Manual login browser channel={browser_channel!r}")
-        
-        _launch_kwargs = dict(
-            user_data_dir=user_dir,
-            headless=False,  # HEADFUL
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled"
-            ],
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-        )
-        if browser_channel:
-            _launch_kwargs["channel"] = browser_channel
-        
-        context = await playwright_inst.chromium.launch_persistent_context(**_launch_kwargs)
-        
-        page = await context.new_page()
-        page.set_default_timeout(60000)
-        
-        await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-        
-        # Poll to check if logged in (up to 5 minutes)
-        logged_in = False
-        timeout_seconds = 300
-        for _ in range(timeout_seconds):
-            await asyncio.sleep(1.5)
-            
-            # Check if browser was closed by user
-            if not context.pages:
-                break
-                
-            current_url = page.url.lower()
-            indicators = success_indicators.get(platform, [])
-            
-            # Check URL indicators
-            if any(ind in current_url for ind in indicators if "." in ind or "/" in ind):
-                logged_in = True
-                break
-                
-            # Check DOM selectors
-            dom_indicators = [ind for ind in indicators if ind.startswith("#") or ind.startswith(".") or " " in ind or "button" in ind]
-            for selector in dom_indicators:
+        async with browser_pool.acquire_page(user_id=user_id_str) as page:
+            page.set_default_timeout(60000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            logger.info(f"[BrowserManager] Login required — waiting for user action. Platform: {platform}")
+
+            # Poll for successful login (up to 5 minutes)
+            logged_in = False
+            timeout_seconds = 300
+            context = page.context
+
+            for _ in range(timeout_seconds):
+                await asyncio.sleep(1.5)
+
+                # Check if the page/context was closed by user
+                if not context.pages:
+                    break
+
+                current_url = page.url.lower()
+                indicators = success_indicators.get(platform, [])
+
+                # URL-based check
+                if any(ind in current_url for ind in indicators if "." in ind or "/" in ind):
+                    logged_in = True
+                    break
+
+                # DOM-selector-based check
+                dom_inds = [i for i in indicators if i.startswith("#") or i.startswith(".") or " " in i or "button" in i]
+                for selector in dom_inds:
+                    try:
+                        el = await page.query_selector(selector)
+                        if el and await el.is_visible():
+                            logged_in = True
+                            break
+                    except Exception:
+                        pass
+                if logged_in:
+                    break
+
+            if logged_in:
+                # Flush cookies to profile on disk
                 try:
-                    el = await page.query_selector(selector)
-                    if el and await el.is_visible():
-                        logged_in = True
-                        break
+                    await context.storage_state()
                 except Exception:
                     pass
-            if logged_in:
-                break
-                
-        if logged_in:
-            logger.info(f"User {user.email} successfully authenticated on {platform}!")
-            await asyncio.sleep(4.0)
-            await context.close()
-            await playwright_inst.stop()
-            return {"status": "success", "message": f"Successfully authenticated on {source}."}
-        else:
-            try:
-                await context.close()
-            except Exception:
-                pass
-            await playwright_inst.stop()
-            return {"status": "failed", "message": "Manual login was closed or timed out before authentication succeeded."}
-            
+                await asyncio.sleep(3.0)
+                logger.info(f"[BrowserManager] User {user.email} authenticated on {platform}. Session saved to profile.")
+                # Tab is closed by context manager; Edge window stays open for automation
+                return {"status": "success", "message": f"Successfully authenticated on {source}."}
+            else:
+                logger.warning(f"[BrowserManager] Login on {platform} timed out or was closed before completion.")
+                return {"status": "failed", "message": "Manual login was closed or timed out before authentication succeeded."}
+
     except Exception as e:
-        logger.error(f"Error during manual browser login: {e}", exc_info=True)
-        try:
-            await context.close()
-        except Exception:
-            pass
-        try:
-            await playwright_inst.stop()
-        except Exception:
-            pass
+        logger.error(f"[BrowserManager] Error during manual browser login for {platform}: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed launching login window: {str(e)}"
         )
+

@@ -145,6 +145,36 @@ class ApplicationAgent(BaseAgent):
                     await self.db.commit()
                     return AgentResult(success=True, output_data={"status": "SKIPPED_INCOMPLETE_PROFILE", "reason": "Profile incomplete."})
 
+            # --- Deduplication Engine check before applying ---
+            dup_stmt = select(Application).join(JobPosting).where(
+                Application.user_id == app.user_id,
+                func.lower(func.trim(JobPosting.company_name)) == func.lower(func.trim(job.company_name)),
+                func.lower(func.trim(JobPosting.role_title)) == func.lower(func.trim(job.role_title)),
+                func.lower(func.trim(JobPosting.location)) == func.lower(func.trim(job.location)),
+                func.lower(func.trim(JobPosting.source)) == func.lower(func.trim(job.source)),
+                Application.id != app.id
+            )
+            dup_res = await self.db.execute(dup_stmt)
+            dup_app = dup_res.scalars().first()
+            if dup_app:
+                logger.info(f"ApplicationAgent: Duplicate application detected (status={dup_app.status}) for {job.role_title} at {job.company_name}. Skipping.")
+                app.status = "SKIPPED_DUPLICATE"
+                app.notes = f"SKIPPED: Duplicate application detected with status={dup_app.status} at runtime."
+                self.db.add(app)
+                
+                event = ApplicationEvent(
+                    application_id=app.id,
+                    user_id=app.user_id,
+                    event_type="SUBMISSION_SKIPPED",
+                    old_status="APPLYING",
+                    new_status="SKIPPED_DUPLICATE",
+                    details={"reason": f"Duplicate application detected with status={dup_app.status}"},
+                    agent_name=self.agent_name
+                )
+                self.db.add(event)
+                await self.db.commit()
+                return AgentResult(success=True, output_data={"status": "SKIPPED_DUPLICATE", "reason": "Duplicate application detected."})
+
             # Check if we need to pre-generate answers
             has_answers = app.generated_answers is not None
             
@@ -173,37 +203,49 @@ class ApplicationAgent(BaseAgent):
             from app.config import settings
 
             url_lower = job.source_url.lower()
+            platform = "portal"
             if "linkedin.com" in url_lower:
+                platform = "linkedin"
                 adapter_cls = LinkedInAdapter
             elif "indeed.com" in url_lower:
+                platform = "indeed"
                 adapter_cls = IndeedAdapter
             elif "naukri.com" in url_lower:
+                platform = "naukri"
                 adapter_cls = NaukriAdapter
             elif "unstop.com" in url_lower:
+                platform = "unstop"
                 adapter_cls = UnstopAdapter
             elif "greenhouse.io" in url_lower:
+                platform = "greenhouse"
                 adapter_cls = GreenhouseAdapter
             elif "lever.co" in url_lower:
+                platform = "lever"
                 adapter_cls = LeverAdapter
             elif "ashbyhq.com" in url_lower:
+                platform = "ashby"
                 adapter_cls = AshbyAdapter
             elif "myworkdayjobs.com" in url_lower or "workday" in url_lower:
+                platform = "workday"
                 adapter_cls = WorkdayAdapter
             else:
                 adapter_cls = CompanyPortalAdapter
 
             await self.log_info(f"Routing application task to adapter: {adapter_cls.__name__}")
 
-            # Acquire Playwright page with user-bound session profile
-            async with browser_pool.acquire_page(user_id=self.user_id) as page:
+            # Acquire Playwright page with user-bound session profile and platform tracking
+            async with browser_pool.acquire_page(user_id=self.user_id, platform=platform) as page:
                 try:
                     # Capturing initial screenshot
                     await page.goto(job.source_url, wait_until="domcontentloaded", timeout=45000)
                     await asyncio.sleep(4.0)
                     
-                    init_screenshot = await page.screenshot(type="png")
-                    init_key = f"applications/{self.user_id}/{app.id}/initial.png"
-                    await StorageService.upload_file(init_key, init_screenshot)
+                    try:
+                        init_screenshot = await page.screenshot(type="png", timeout=5000)
+                        init_key = f"applications/{self.user_id}/{app.id}/initial.png"
+                        await StorageService.upload_file(init_key, init_screenshot)
+                    except Exception as ss_err:
+                        await self.log_info(f"Could not capture initial screenshot (background/minimized page): {ss_err}")
                     
                     # Instantiate selected apply adapter
                     adapter = adapter_cls(
@@ -216,6 +258,12 @@ class ApplicationAgent(BaseAgent):
                         preferences=prefs,
                         log_callback=self.log_info
                     )
+
+                    # Randomized human-like timing delay between 10 and 20 seconds
+                    import random
+                    delay = random.uniform(10.0, 20.0)
+                    await self.log_info(f"Applying randomized human-like delay of {delay:.2f} seconds before form submission...")
+                    await asyncio.sleep(delay)
 
                     dry_run = input_data.get("dry_run", False) or os.getenv("DRY_RUN", "False").lower() == "true"
                     apply_res = await adapter.apply(dry_run=dry_run)
@@ -303,11 +351,11 @@ class ApplicationAgent(BaseAgent):
                 except Exception as inner_e:
                     try:
                         await self.log_error(f"Error inside browser page context during apply execution: {inner_e}")
-                        fail_screenshot = await page.screenshot(type="png")
+                        fail_screenshot = await page.screenshot(type="png", timeout=5000)
                         fail_key = f"applications/{self.user_id}/{app.id}/failure.png"
                         await StorageService.upload_file(fail_key, fail_screenshot)
                     except Exception as ss_err:
-                        await self.log_error(f"Failed to capture failure screenshot: {ss_err}")
+                        await self.log_error(f"Failed to capture failure screenshot (background/minimized page): {ss_err}")
                     raise inner_e
 
         except Exception as e:

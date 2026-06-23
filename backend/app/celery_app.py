@@ -48,6 +48,7 @@ celery_app.conf.update(
         "app.tasks.application_tasks.execute_browser_application": {"queue": "applications"},
         "app.tasks.application_tasks.scheduled_retry_pending_applications": {"queue": "applications"},
         "app.tasks.application_tasks.scheduled_recover_stuck_applications": {"queue": "applications"},
+        "app.tasks.application_tasks.cleanup_browser_tabs": {"queue": "applications"},
         # Per-platform dedicated queues
         "app.tasks.application_tasks.execute_linkedin_application": {"queue": "linkedin"},
         "app.tasks.application_tasks.execute_indeed_application": {"queue": "indeed"},
@@ -153,6 +154,10 @@ celery_app.autodiscover_tasks([
 
 # Beat schedule — periodic tasks
 celery_app.conf.beat_schedule = {
+    "cleanup-browser-tabs": {
+        "task": "app.tasks.application_tasks.cleanup_browser_tabs",
+        "schedule": 30.0,      # every 30 seconds
+    },
     "sync-sheets-batch": {
         "task": "app.tasks.sheets_tasks.sync_google_sheets_batch",
         "schedule": 15.0,      # every 15 seconds

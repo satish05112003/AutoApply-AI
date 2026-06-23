@@ -12,7 +12,10 @@ import {
   RefreshCw, 
   XCircle,
   Pause,
-  ExternalLink
+  ExternalLink,
+  Power,
+  Zap,
+  ShieldOff
 } from "lucide-react";
 
 // Modular bento components
@@ -31,6 +34,7 @@ export default function DashboardPage() {
     agentStatus,
     googleIntegration,
     systemHealth,
+    automationEnabled,
     fetchApplications, 
     fetchStats, 
     fetchAgentStatus,
@@ -38,6 +42,9 @@ export default function DashboardPage() {
     fetchSystemEvents,
     fetchSheetsStatus,
     fetchPlatformSessions,
+    fetchAutomationStatus,
+    startAutomation,
+    stopAutomation,
     approveApplication, 
     rejectApplication, 
     updateApplicationAnswers,
@@ -74,6 +81,7 @@ export default function DashboardPage() {
     fetchSystemEvents();
     fetchSheetsStatus();
     fetchPlatformSessions();
+    fetchAutomationStatus();
 
     const interval = setInterval(() => {
       fetchAgentStatus();
@@ -83,6 +91,7 @@ export default function DashboardPage() {
       fetchSystemEvents();
       fetchSheetsStatus();
       fetchPlatformSessions();
+      fetchAutomationStatus();
     }, 5000);
 
     return () => clearInterval(interval);
@@ -166,6 +175,20 @@ export default function DashboardPage() {
     }
   };
 
+  const [isTogglingAutomation, setIsTogglingAutomation] = useState(false);
+
+  const handleToggleAutomation = async () => {
+    setIsTogglingAutomation(true);
+    if (automationEnabled) {
+      addLogLine("[System] Stopping automation engine...");
+      await stopAutomation();
+    } else {
+      addLogLine("[System] Starting automation engine...");
+      await startAutomation();
+    }
+    setIsTogglingAutomation(false);
+  };
+
   const handlePauseSystem = async () => {
     addLogLine("[System] Pausing all background agent pipelines...");
     await stopDiscovery();
@@ -190,7 +213,84 @@ export default function DashboardPage() {
       {/* 1. Header component */}
       <DashboardHeader wsStatus={useStore.getState().token ? "connected" : "disconnected"} />
 
-      {/* Redis Connection Down Alert */}
+      {/* ═══════════════════════════════════════════════════════════════════
+          MASTER AUTOMATION ENGINE TOGGLE — Must be explicitly enabled.
+          Default: OFF. Every restart resets to OFF.
+          ═════════════════════════════════════════════════════════════════ */}
+      <div className={`relative overflow-hidden rounded-2xl border transition-all duration-500 ${
+        automationEnabled 
+          ? "bg-emerald-950/10 border-emerald-800/50 shadow-[0_0_40px_rgba(16,185,129,0.08)]" 
+          : "bg-zinc-950 border-zinc-800/60"
+      }`}>
+        {/* Animated glow strip when active */}
+        {automationEnabled && (
+          <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-emerald-500 to-transparent opacity-60 animate-pulse" />
+        )}
+
+        <div className="flex items-center justify-between p-5 gap-6">
+          {/* Left: Status info */}
+          <div className="flex items-center gap-4 min-w-0">
+            {/* Power icon */}
+            <div className={`flex-shrink-0 w-11 h-11 rounded-xl border flex items-center justify-center transition-all duration-300 ${
+              automationEnabled 
+                ? "bg-emerald-950/40 border-emerald-700/60 shadow-[0_0_16px_rgba(16,185,129,0.25)]" 
+                : "bg-zinc-900 border-zinc-800"
+            }`}>
+              {automationEnabled 
+                ? <Zap className="w-5 h-5 text-emerald-400 animate-pulse" />
+                : <ShieldOff className="w-5 h-5 text-zinc-500" />
+              }
+            </div>
+
+            {/* Text content */}
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 mb-0.5">
+                <span className="font-bold text-sm font-mono text-zinc-100">Automation Engine</span>
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-mono font-bold border uppercase tracking-wider ${
+                  automationEnabled 
+                    ? "bg-emerald-950/50 text-emerald-400 border-emerald-700/50 animate-pulse" 
+                    : "bg-zinc-900 text-zinc-500 border-zinc-800"
+                }`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${
+                    automationEnabled ? "bg-emerald-400" : "bg-zinc-600"
+                  }`} />
+                  {automationEnabled ? "RUNNING" : "IDLE"}
+                </span>
+              </div>
+              <p className="text-[10px] font-mono text-zinc-500 truncate">
+                {automationEnabled 
+                  ? "Crawlers, AI matching, and browser application agents are all active."
+                  : "System is fully idle. No crawlers, agents, or browser tabs will launch."
+                }
+              </p>
+            </div>
+          </div>
+
+          {/* Right: Toggle button */}
+          <button
+            id="automation-engine-toggle"
+            onClick={handleToggleAutomation}
+            disabled={isTogglingAutomation}
+            className={`flex-shrink-0 flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-xs font-mono border transition-all duration-200 cursor-pointer ${
+              isTogglingAutomation 
+                ? "opacity-60 cursor-not-allowed bg-zinc-900 border-zinc-800 text-zinc-500" 
+                : automationEnabled 
+                  ? "bg-zinc-900 border-zinc-700 text-red-400 hover:bg-red-950/20 hover:border-red-800/60 hover:shadow-[0_0_12px_rgba(239,68,68,0.15)]" 
+                  : "bg-emerald-600 border-emerald-500 text-white hover:bg-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.3)] hover:shadow-[0_0_30px_rgba(16,185,129,0.5)]"
+            }`}
+          >
+            <Power className={`w-3.5 h-3.5 ${isTogglingAutomation ? "animate-spin" : ""}`} />
+            {isTogglingAutomation 
+              ? "Please wait..." 
+              : automationEnabled 
+                ? "Stop Engine" 
+                : "Start Engine"
+            }
+          </button>
+        </div>
+      </div>
+
+
       {agentStatus?.redis_connected === false && (
         <div className="p-3.5 bg-red-950/20 border border-red-800 rounded-xl text-red-400 font-mono text-[10px] flex items-center justify-between shadow-md">
           <div className="flex items-center gap-2">

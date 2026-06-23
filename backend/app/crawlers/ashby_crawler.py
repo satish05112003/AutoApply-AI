@@ -121,7 +121,7 @@ class AshbyCrawler(BaseCrawler):
                     except Exception:
                         dt = now
                     age = now - dt
-                    if age > timedelta(days=30):  # Skip only truly stale postings (>30d)
+                    if age > timedelta(days=7):  # Skip postings older than 7 days
                         continue
                 else:
                     # No publish date means actively open job — always include

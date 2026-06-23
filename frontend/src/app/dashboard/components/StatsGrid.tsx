@@ -181,6 +181,66 @@ export default function StatsGrid() {
           </div>
         )}
       </div>
+
+      {/* Job Discovery & Automation Summary Panel */}
+      <div className="premium-card p-5 space-y-4">
+        <div className="flex items-center justify-between pb-1">
+          <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-wider font-mono flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+            Job Discovery & Automation Metrics
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+          <div className="p-4 bg-zinc-950/30 rounded-lg border border-zinc-900/50 flex flex-col justify-between min-h-[85px] hover:border-zinc-800 transition-all">
+            <span className="text-[9px] text-zinc-550 font-bold uppercase tracking-wider font-mono">LinkedIn Jobs</span>
+            <div className="mt-3 flex items-baseline gap-1">
+              <span className="text-xl font-bold font-sans text-zinc-200">{stats?.linkedin_jobs_found ?? 0}</span>
+              <span className="text-[8px] text-zinc-500 font-mono uppercase">found</span>
+            </div>
+          </div>
+
+          <div className="p-4 bg-zinc-950/30 rounded-lg border border-zinc-900/50 flex flex-col justify-between min-h-[85px] hover:border-zinc-800 transition-all">
+            <span className="text-[9px] text-zinc-550 font-bold uppercase tracking-wider font-mono">Naukri Jobs</span>
+            <div className="mt-3 flex items-baseline gap-1">
+              <span className="text-xl font-bold font-sans text-zinc-200">{stats?.naukri_jobs_found ?? 0}</span>
+              <span className="text-[8px] text-zinc-500 font-mono uppercase">found</span>
+            </div>
+          </div>
+
+          <div className="p-4 bg-zinc-950/30 rounded-lg border border-zinc-900/50 flex flex-col justify-between min-h-[85px] hover:border-zinc-800 transition-all">
+            <span className="text-[9px] text-zinc-550 font-bold uppercase tracking-wider font-mono">Indeed Jobs</span>
+            <div className="mt-3 flex items-baseline gap-1">
+              <span className="text-xl font-bold font-sans text-zinc-200">{stats?.indeed_jobs_found ?? 0}</span>
+              <span className="text-[8px] text-zinc-500 font-mono uppercase">found</span>
+            </div>
+          </div>
+
+          <div className="p-4 bg-zinc-950/30 rounded-lg border border-zinc-900/50 flex flex-col justify-between min-h-[85px] hover:border-zinc-800 transition-all">
+            <span className="text-[9px] text-zinc-555 font-bold uppercase tracking-wider font-mono">Applied Today</span>
+            <div className="mt-3 flex items-baseline gap-1">
+              <span className="text-xl font-bold font-sans text-emerald-400">{stats?.jobs_applied_today ?? 0}</span>
+              <span className="text-[8px] text-zinc-500 font-mono uppercase">apps</span>
+            </div>
+          </div>
+
+          <div className="p-4 bg-zinc-950/30 rounded-lg border border-zinc-900/50 flex flex-col justify-between min-h-[85px] hover:border-zinc-800 transition-all">
+            <span className="text-[9px] text-zinc-550 font-bold uppercase tracking-wider font-mono">Duplicates Blocked</span>
+            <div className="mt-3 flex items-baseline gap-1">
+              <span className="text-xl font-bold font-sans text-cyan-400">{stats?.duplicate_jobs_prevented ?? 0}</span>
+              <span className="text-[8px] text-zinc-500 font-mono uppercase">prevented</span>
+            </div>
+          </div>
+
+          <div className="p-4 bg-zinc-950/30 rounded-lg border border-zinc-900/50 flex flex-col justify-between min-h-[85px] hover:border-zinc-800 transition-all">
+            <span className="text-[9px] text-zinc-550 font-bold uppercase tracking-wider font-mono">Apps Skipped</span>
+            <div className="mt-3 flex items-baseline gap-1">
+              <span className="text-xl font-bold font-sans text-amber-500">{stats?.applications_skipped ?? 0}</span>
+              <span className="text-[8px] text-zinc-500 font-mono uppercase">skipped</span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

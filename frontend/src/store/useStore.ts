@@ -19,6 +19,14 @@ interface AppState {
     captcha_rate?: number;
     platform_rates?: Record<string, number>;
     failure_rate?: number;
+    linkedin_jobs_found?: number;
+    naukri_jobs_found?: number;
+    indeed_jobs_found?: number;
+    applications_submitted?: number;
+    applications_failed?: number;
+    applications_skipped?: number;
+    duplicate_jobs_prevented?: number;
+    jobs_applied_today?: number;
   };
   logs: string[];
   notifications: any[];
@@ -65,6 +73,7 @@ interface AppState {
     workers?: Record<string, string>;
   } | null;
   platformSessions: Record<string, boolean>;
+  automationEnabled: boolean;
   
   // Actions
   setToken: (token: string | null) => void;
@@ -104,6 +113,9 @@ interface AppState {
   connectPlatform: (platform: string) => Promise<boolean>;
   addLogLine: (message: string) => void;
   clearLogs: () => void;
+  fetchAutomationStatus: () => Promise<void>;
+  startAutomation: () => Promise<boolean>;
+  stopAutomation: () => Promise<boolean>;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -123,7 +135,15 @@ export const useStore = create<AppState>((set, get) => ({
     avg_duration_min: 0,
     captcha_rate: 0,
     platform_rates: {},
-    failure_rate: 0
+    failure_rate: 0,
+    linkedin_jobs_found: 0,
+    naukri_jobs_found: 0,
+    indeed_jobs_found: 0,
+    applications_submitted: 0,
+    applications_failed: 0,
+    applications_skipped: 0,
+    duplicate_jobs_prevented: 0,
+    jobs_applied_today: 0
   },
   logs: [
     "[System] Agent pipeline listening for events...",
@@ -153,6 +173,7 @@ export const useStore = create<AppState>((set, get) => ({
     naukri: false,
     unstop: false
   },
+  automationEnabled: false,
 
   setToken: (token) => {
     if (token) localStorage.setItem("token", token);
@@ -829,5 +850,64 @@ export const useStore = create<AppState>((set, get) => ({
     });
   },
 
-  clearLogs: () => set({ logs: [] })
+  clearLogs: () => set({ logs: [] }),
+
+  fetchAutomationStatus: async () => {
+    const token = get().token;
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_BASE}/system/automation-status`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.status === 200) {
+        const data = await res.json();
+        set({ automationEnabled: data.enabled === true });
+      }
+    } catch (e) {
+      console.error("[Store] Failed to fetch automation status:", e);
+    }
+  },
+
+  startAutomation: async () => {
+    const token = get().token;
+    if (!token) return false;
+    try {
+      const res = await fetch(`${API_BASE}/system/automation/start`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.status === 200) {
+        const data = await res.json();
+        set({ automationEnabled: data.enabled === true });
+        get().addLogLine("[System] ⚡ Automation engine STARTED. Crawlers and agents are now active.");
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.error("[Store] Failed to start automation:", e);
+      return false;
+    }
+  },
+
+  stopAutomation: async () => {
+    const token = get().token;
+    if (!token) return false;
+    try {
+      const res = await fetch(`${API_BASE}/system/automation/stop`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.status === 200) {
+        const data = await res.json();
+        set({ automationEnabled: data.enabled === true });
+        get().addLogLine("[System] 🔴 Automation engine STOPPED. System is now fully idle.");
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.error("[Store] Failed to stop automation:", e);
+      return false;
+    }
+  },
 }));
+

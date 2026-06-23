@@ -1,394 +1,645 @@
+"""
+browser_pool.py — Unified Browser Session Manager
+===================================================
+Maintains exactly ONE persistent Microsoft Edge context per user.
+- Profile directories are NEVER wiped (auth cookies are preserved).
+- Jobs open as TABS inside the existing Edge window, not new windows.
+- Maximum BROWSER_MAX_TABS concurrent automation tabs per user (extras queue).
+- Login-required detection: raises LoginRequiredError so the agent can pause
+  and wait for the user to re-authenticate via the Dashboard.
+- Same `acquire_page(user_id)` context-manager API as the old BrowserPoolManager
+  so no adapter or agent code needs to change.
+
+Design
+------
+  BrowserSessionManager
+    _contexts       : Dict[user_id, BrowserContext]   — kept alive indefinitely
+    _playwrights    : Dict[user_id, Playwright]
+    _locks          : Dict[user_id, asyncio.Lock]      — serialises context startup
+    _tab_semaphores : Dict[user_id, asyncio.Semaphore] — caps concurrent tabs
+    _tab_counts     : Dict[user_id, int]               — diagnostic counter
+"""
+
 import os
+import sys
 import asyncio
 import logging
-import shutil
-import uuid
-import re
 import subprocess
 from contextlib import asynccontextmanager
-from typing import Dict, Any, List, Optional
-from playwright.async_api import async_playwright, BrowserContext, Page
+from typing import Dict, Optional
+
+from playwright.async_api import async_playwright, Browser, BrowserContext, CDPSession, Page, Playwright
 from app.config import settings
+from app.redis_client import redis_client
 
 logger = logging.getLogger("autoapply_ai.browser_pool")
 
-def get_stale_processes(profile_dir: str) -> list:
-    stale_pids = []
-    # Check using psutil if available
+# ---------------------------------------------------------------------------
+# Custom exceptions
+# ---------------------------------------------------------------------------
+
+class LoginRequiredError(RuntimeError):
+    """Raised when an automation tab is redirected to a platform login page."""
+
+# ---------------------------------------------------------------------------
+# Login-URL detection helpers
+# ---------------------------------------------------------------------------
+
+_LOGIN_PATTERNS: list[str] = [
+    "linkedin.com/login",
+    "linkedin.com/uas/login",
+    "linkedin.com/checkpoint",
+    "indeed.com/account/login",
+    "secure.indeed.com",
+    "naukri.com/nlogin",
+    "unstop.com/auth/login",
+    "accounts.google.com",
+    "login.microsoftonline.com",
+]
+
+def _looks_like_login_page(url: str) -> bool:
+    url_lower = url.lower()
+    return any(p in url_lower for p in _LOGIN_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
+# Profile-directory helpers
+# ---------------------------------------------------------------------------
+
+def _get_profile_dir(user_id: str) -> str:
+    """
+    Return the user's primary Personal Edge User Data directory.
+    Never creates temporary or user_x folders.
+    """
+    if sys.platform == "win32" and os.environ.get("LOCALAPPDATA"):
+        return os.path.join(os.environ.get("LOCALAPPDATA"), "Microsoft", "Edge", "User Data")
+    return os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\User Data")
+
+
+def _kill_msedge_processes() -> None:
+    """
+    Terminate all running msedge.exe processes on Windows to release file locks.
+    """
+    logger.info("[BrowserManager] Edge remote port not active. Terminating existing msedge.exe processes to release file locks...")
+    
+    # 1. Try using psutil for precise termination
     try:
         import psutil
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        count = 0
+        for proc in psutil.process_iter(['pid', 'name']):
             try:
-                name = proc.info.get('name') or ''
-                cmdline = proc.info.get('cmdline') or []
-                cmdline_str = ' '.join(cmdline).lower()
-                if ('msedge' in name.lower() or 'chrome' in name.lower() or 'chromium' in name.lower()) and profile_dir.lower() in cmdline_str:
-                    stale_pids.append(proc.pid)
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                name = (proc.info.get('name') or '').lower()
+                if 'msedge' in name:
+                    proc.kill()
+                    count += 1
+            except Exception:
                 pass
+        if count > 0:
+            logger.info(f"[BrowserManager] Terminated {count} msedge processes via psutil.")
     except ImportError:
-        # fallback to wmic on Windows
-        try:
-            for exe in ["msedge.exe", "chrome.exe", "chromium.exe"]:
-                cmd = f'wmic process where "name=\'{exe}\'" get CommandLine,ProcessId'
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                process = subprocess.Popen(
-                    ['cmd', '/c', cmd],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    startupinfo=startupinfo
-                )
-                stdout, _ = process.communicate()
-                for line in stdout.splitlines():
-                    if not line.strip() or "processid" in line.lower():
-                        continue
-                    if profile_dir.lower() in line.lower():
-                        match = re.search(r'(\d+)\s*$', line.strip())
-                        if match:
-                            stale_pids.append(int(match.group(1)))
-        except Exception as e:
-            logger.warning(f"Error checking processes via wmic: {e}")
-    return stale_pids
+        pass
 
-def cleanup_stale_profile(profile_dir: str):
-    singleton_lock_path = os.path.join(profile_dir, "SingletonLock")
-    lockfile_path = os.path.join(profile_dir, "lockfile")
-    lock_in_default = os.path.join(profile_dir, "Default", "LOCK")
-    
-    has_lock_file = (
-        os.path.exists(singleton_lock_path) or 
-        os.path.exists(lockfile_path) or 
-        os.path.exists(lock_in_default)
-    )
-    stale_processes = get_stale_processes(profile_dir)
-    
-    if has_lock_file or stale_processes:
-        logger.warning(f"Stale profile detected for path {profile_dir} (lock files found: {has_lock_file}, stale processes: {stale_processes})")
-        # 1. Kill orphan processes
-        if stale_processes:
-            logger.info(f"Killing orphan browser processes: {stale_processes}")
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            for pid in stale_processes:
-                try:
-                    try:
-                        import psutil
-                        proc = psutil.Process(pid)
-                        proc.kill()
-                    except ImportError:
-                        subprocess.run(
-                            ['taskkill', '/F', '/PID', str(pid)],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            startupinfo=startupinfo
-                        )
-                except Exception as e:
-                    logger.warning(f"Failed to kill process {pid}: {e}")
-        
-        # 2. Remove lock files
-        for p in [singleton_lock_path, lockfile_path, lock_in_default]:
-            if os.path.exists(p):
-                try:
-                    if os.path.isdir(p) and not os.path.islink(p):
-                        shutil.rmtree(p, ignore_errors=True)
-                    else:
-                        os.remove(p)
-                    logger.info(f"Removed lock file/link: {p}")
-                except Exception as e:
-                    logger.warning(f"Failed to remove lock {p}: {e}")
-        
-        # 3. Recreate profile
-        logger.info(f"Recreating profile directory: {profile_dir}")
-        try:
-            shutil.rmtree(profile_dir, ignore_errors=True)
-            os.makedirs(profile_dir, exist_ok=True)
-            logger.info(f"Profile directory recreated successfully: {profile_dir}")
-        except Exception as e:
-            logger.warning(f"Failed to recreate profile directory {profile_dir}: {e}")
-
-class BrowserInstance:
-    def __init__(self, idx: int, user_id: Optional[str] = None, headless: Optional[bool] = None):
-        self.idx = idx
-        self.user_id = user_id
-        self.playwright = None
-        self.context: Optional[BrowserContext] = None
-        self.task_count = 0
-        self.lock = asyncio.Lock()
-        self.unique_dir = None
-        self.headless = headless
-
-    async def start(self):
-        """Start the headless browser context using Playwright inside a unique directory."""
-        await self.stop()
-        
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        profiles_dir = os.path.join(base_dir, "storage", "browser_profiles")
-        os.makedirs(profiles_dir, exist_ok=True)
-        
-        if self.user_id:
-            self.unique_dir = os.path.join(profiles_dir, f"user_{self.user_id}")
-        else:
-            self.unique_dir = os.path.join(profiles_dir, f"profile_{self.idx}_{uuid.uuid4().hex}")
-            
-        os.makedirs(self.unique_dir, exist_ok=True)
-
-        # Clean up stale locks and processes before first launch attempt
-        cleanup_stale_profile(self.unique_dir)
-
-        logger.info(f"Starting Browser Context #{self.idx} (user_id={self.user_id}) at dir: {self.unique_dir}")
-        self.playwright = await async_playwright().start()
-        
-        headless_mode = self.headless if self.headless is not None else settings.BROWSER_HEADLESS
-        
-        # We will attempt channel="msedge" first.
-        # But if settings.BROWSER_CHANNEL is specified and it is different, we can respect that too.
-        # Let's default to "msedge" if not set, or settings.BROWSER_CHANNEL.
-        primary_channel = settings.BROWSER_CHANNEL or "msedge"
-        
-        launch_kwargs = dict(
-            user_data_dir=self.unique_dir,
-            headless=headless_mode,
-            args=[
-                "--disable-gpu",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled"  # Anti-bot detection
-            ],
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    # 2. Fallback to taskkill
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "msedge.exe"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            startupinfo=startupinfo
         )
-        
-        # Primary Attempt
-        primary_kwargs = launch_kwargs.copy()
-        if primary_channel:
-            primary_kwargs["channel"] = primary_channel
-            
-        logger.info(f"Attempting to launch browser context #{self.idx} via channel={primary_channel!r}")
-        
-        try:
-            self.context = await self.playwright.chromium.launch_persistent_context(**primary_kwargs)
-            logger.info(f"Successfully launched browser using channel={primary_channel!r}")
-        except Exception as e:
-            logger.error(f"Failed to launch browser with channel={primary_channel!r}. Error: {e}. Attempting profile recovery...", exc_info=True)
-            
-            # Profile Recovery
-            cleanup_stale_profile(self.unique_dir)
-            
-            # Retry primary launch after recovery
+        logger.info("[BrowserManager] Executed fallback taskkill for msedge.exe.")
+    except Exception as e:
+        logger.warning(f"[BrowserManager] Fallback taskkill failed: {e}")
+
+
+def _remove_stale_lock_files(profile_dir: str) -> None:
+    """
+    Remove Chromium singleton lock files only when no Edge process owns them.
+    """
+    lock_paths = [
+        os.path.join(profile_dir, "SingletonLock"),
+        os.path.join(profile_dir, "lockfile"),
+        os.path.join(profile_dir, "Default", "LOCK"),
+    ]
+    for lp in lock_paths:
+        if os.path.exists(lp):
             try:
-                logger.info(f"Retrying launch with channel={primary_channel!r} after profile recovery...")
-                self.context = await self.playwright.chromium.launch_persistent_context(**primary_kwargs)
-                logger.info(f"Successfully launched browser after profile recovery using channel={primary_channel!r}")
-            except Exception as retry_err:
-                logger.error(f"Retry launch with channel={primary_channel!r} failed. Error: {retry_err}. Attempting fallback to Chromium...", exc_info=True)
-                
-                # Fallback Attempt (bundled Chromium - without channel)
-                fallback_kwargs = launch_kwargs.copy()
-                fallback_kwargs.pop("channel", None)
-                try:
-                    logger.info("Launching fallback browser context (default Playwright Chromium, no channel)...")
-                    self.context = await self.playwright.chromium.launch_persistent_context(**fallback_kwargs)
-                    logger.info("Successfully launched fallback browser: default Chromium (no channel)")
-                except Exception as fallback_err:
-                    logger.error("Fallback browser launch failed. Error:", exc_info=True)
-                    raise fallback_err
-        
-        # Capture launch screenshots to verify success
+                if os.path.islink(lp) or os.path.isfile(lp):
+                    os.remove(lp)
+                    logger.info(f"[BrowserManager] Removed stale lock file: {lp}")
+            except Exception as e:
+                logger.warning(f"[BrowserManager] Could not remove lock {lp}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Background page and target tracking helpers
+# ---------------------------------------------------------------------------
+
+async def _get_page_target_id(page: Page) -> str:
+    """Get the unique target ID of a Playwright Page via CDP."""
+    client = None
+    try:
+        client = await page.context.new_cdp_session(page)
+        info = await client.send("Target.getTargetInfo")
+        return info.get("targetInfo", {}).get("targetId")
+    except Exception as e:
+        logger.warning(f"[BrowserManager] Failed to get target ID via CDP: {e}")
+        raise e
+    finally:
+        if client:
+            try:
+                await client.detach()
+            except Exception:
+                pass
+
+async def _find_page_by_target_id(context: BrowserContext, target_id: str) -> Optional[Page]:
+    """Find a Page object in context.pages that matches the target ID."""
+    for p in context.pages:
+        client = None
         try:
-            pages = self.context.pages
-            page = pages[0] if pages else await self.context.new_page()
-            await page.goto("about:blank")
-            proofs_dir = os.path.join(base_dir, "storage", "application_proofs")
-            os.makedirs(proofs_dir, exist_ok=True)
-            screenshot_path = os.path.join(proofs_dir, f"launch_success_{self.user_id or self.idx}.png")
-            await page.screenshot(path=screenshot_path)
-            logger.info(f"SCREENSHOT_CAPTURED: Captured launch diagnostic screenshot: {screenshot_path}")
-            if not pages:
-                await page.close()
-        except Exception as se:
-            logger.warning(f"Failed to capture launch screenshot: {se}")
+            client = await context.new_cdp_session(p)
+            info = await client.send("Target.getTargetInfo")
+            if info.get("targetInfo", {}).get("targetId") == target_id:
+                return p
+        except Exception:
+            continue
+        finally:
+            if client:
+                try:
+                    await client.detach()
+                except Exception:
+                    pass
+    return None
+
+async def create_background_page(context: BrowserContext) -> Page:
+    """Create a new Page in the background without activating/focusing it."""
+    pages = context.pages
+    if not pages:
+        return await context.new_page()
+
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    def on_page(p: Page):
+        if not future.done():
+            future.set_result(p)
+
+    context.on("page", on_page)
+
+    # Get the manager instance for this loop to access self._cdp_sessions
+    from app.browser.browser_pool import browser_pool
+    manager = browser_pool._get_manager()
+    
+    # We find the user_id from the context
+    user_id = None
+    for uid, ctx in list(manager._contexts.items()):
+        if ctx == context:
+            user_id = uid
+            break
             
-        self.task_count = 0
+    if not user_id:
+        user_id = "__shared__"
 
-    async def stop(self):
-        """Gracefully close the browser context, stop Playwright, and clean up directories."""
+    client = manager._cdp_sessions.get(user_id)
+    if client:
         try:
-            if self.context:
-                await self.context.close()
+            # Check if active
+            await client.send("Target.getTargets")
+        except Exception:
+            client = None
+
+    if not client:
+        try:
+            client = await context.new_cdp_session(pages[0])
+            manager._cdp_sessions[user_id] = client
         except Exception as e:
-            logger.warning(f"Error closing context #{self.idx}: {e}")
-        finally:
-            self.context = None
+            logger.warning(f"[BrowserManager] Failed to create CDP session: {e}")
+            client = None
 
+    if client:
         try:
-            if self.playwright:
-                await self.playwright.stop()
-        except Exception as e:
-            logger.warning(f"Error stopping playwright #{self.idx}: {e}")
-        finally:
-            self.playwright = None
+            result = await client.send("Target.createTarget", {"url": "about:blank", "background": True})
+            target_id = result.get("targetId")
+            logger.info(f"[BrowserManager] Background target created: {target_id}")
 
-        if self.unique_dir and os.path.exists(self.unique_dir):
-            if not self.user_id:
-                try:
-                    shutil.rmtree(self.unique_dir, ignore_errors=True)
-                except Exception as e:
-                    logger.warning(f"Failed to delete unique user_data_dir {self.unique_dir}: {e}")
-            self.unique_dir = None
-
-    async def get_page(self) -> Page:
-        """Create a new page in the browser context."""
-        if not self.context:
-            await self.start()
-        
-        self.task_count += 1
-        try:
-            page = await self.context.new_page()
-            page.set_default_timeout(settings.BROWSER_TIMEOUT_MS)
+            page = await asyncio.wait_for(future, timeout=10.0)
             return page
         except Exception as e:
-            logger.warning(f"Failed to create new page (context might have crashed): {e}. Restarting context...")
-            try:
-                await self.start()
-                page = await self.context.new_page()
-                page.set_default_timeout(settings.BROWSER_TIMEOUT_MS)
-                return page
-            except Exception as restart_err:
-                logger.error(f"Failed to restart browser context after crash: {restart_err}", exc_info=True)
-                raise restart_err
+            logger.warning(f"[BrowserManager] Failed to create background page via CDP: {e}. Falling back to context.new_page().")
+            return await context.new_page()
+        finally:
+            context.remove_listener("page", on_page)
+    else:
+        try:
+            return await context.new_page()
+        finally:
+            context.remove_listener("page", on_page)
 
-class BrowserPoolManager:
+
+# ---------------------------------------------------------------------------
+# Main Session Manager
+# ---------------------------------------------------------------------------
+
+class BrowserSessionManager:
+    """
+    Singleton-per-process session manager.
+
+    Maintains one BrowserContext connected directly to the user's Personal Edge profile
+    via CDP (port 9222). Opens jobs as tabs, sharing active logged-in sessions.
+    """
+
     def __init__(self):
-        self.pool_size = settings.BROWSER_POOL_SIZE
-        self.instances: List[BrowserInstance] = []
-        self.user_instances: Dict[str, BrowserInstance] = {}
-        self.semaphore = asyncio.Semaphore(self.pool_size)
-        self._initialized = False
+        self._contexts: Dict[str, BrowserContext] = {}
+        self._playwrights: Dict[str, Playwright] = {}
+        self._browsers: Dict[str, Optional[Browser]] = {}
+        self._cdp_sessions: Dict[str, Optional[CDPSession]] = {}
+        self._locks: Dict[str, asyncio.Lock] = {}
+        self._tab_semaphores: Dict[str, asyncio.Semaphore] = {}
+        self._tab_counts: Dict[str, int] = {}
 
-    def initialize(self):
-        """Prepare browser instances."""
-        if self._initialized:
-            return
-            
-        for i in range(self.pool_size):
-            self.instances.append(BrowserInstance(i))
-            
-        self._initialized = True
-        logger.info(f"BrowserPoolManager initialized with pool size {self.pool_size}")
+    # ------------------------------------------------------------------ #
+    # Internal helpers                                                     #
+    # ------------------------------------------------------------------ #
 
-    @asynccontextmanager
-    async def acquire_page(self, user_id: Optional[str] = None, headless: Optional[bool] = None):
-        """Acquire a page context from the pool. Automatically recycles the browser if task limit hit."""
-        self.initialize()
-        
-        if user_id:
-            user_id_str = str(user_id)
-            if user_id_str not in self.user_instances:
-                idx = 10000 + len(self.user_instances)
-                self.user_instances[user_id_str] = BrowserInstance(idx, user_id=user_id_str, headless=headless)
+    def _get_lock(self, user_id: str) -> asyncio.Lock:
+        if user_id not in self._locks:
+            self._locks[user_id] = asyncio.Lock()
+        return self._locks[user_id]
+
+    def _get_semaphore(self, user_id: str) -> asyncio.Semaphore:
+        if user_id not in self._tab_semaphores:
+            max_tabs = getattr(settings, "BROWSER_MAX_TABS", 3)
+            self._tab_semaphores[user_id] = asyncio.Semaphore(max_tabs)
+        return self._tab_semaphores[user_id]
+
+    async def _is_context_alive(self, user_id: str) -> bool:
+        ctx = self._contexts.get(user_id)
+        if ctx is None:
+            return False
+        try:
+            _ = ctx.pages
+            return True
+        except Exception:
+            return False
+
+    async def _start_context(self, user_id: str) -> None:
+        """
+        Connect to the user's Personal Edge session via CDP (port 9222).
+        If not active, relaunch Edge with remote debugging enabled.
+        """
+        playwright = await async_playwright().start()
+        primary_user_data_dir = _get_profile_dir(user_id)
+
+        browser = None
+        context = None
+
+        # 1. Try to connect to an already running Edge instance via CDP
+        logger.info("[BrowserManager] Attempting to connect to Personal Edge via CDP (localhost:9222)...")
+        try:
+            browser = await playwright.chromium.connect_over_cdp("http://127.0.0.1:9222")
+            if browser.contexts:
+                context = browser.contexts[0]
+            else:
+                context = await browser.new_context()
+            logger.info("[BrowserManager] Connected successfully to active Personal Edge session.")
+        except Exception as cdp_err:
+            logger.info(f"[BrowserManager] Remote debugging port 9222 is not active: {cdp_err}")
+
+        # 2. Relaunch Edge with remote debugging active if connection failed
+        if not context:
+            logger.info("[BrowserManager] Relaunching Personal Edge with remote debugging enabled...")
             
-            inst = self.user_instances[user_id_str]
-            async with inst.lock:
-                if inst.context and inst.headless != headless:
-                    logger.info(f"Re-starting Browser Instance for user {user_id_str} due to headless mode change (current: {inst.headless}, target: {headless})")
-                    inst.headless = headless
-                    await inst.start()
-                elif inst.task_count >= 50 or not inst.context:
-                    logger.info(f"Recycling user-bound Browser Instance for {user_id_str} (tasks run: {inst.task_count})")
-                    inst.headless = headless
-                    await inst.start()
-                
-                page = await inst.get_page()
+            _kill_msedge_processes()
+            await asyncio.sleep(2.5)
+
+            # Clear lock files
+            _remove_stale_lock_files(primary_user_data_dir)
+
+            browser_channel = getattr(settings, "BROWSER_CHANNEL", "msedge") or "msedge"
+            headless_mode = False  # Must be False for Personal Edge and logins
+
+            launch_kwargs = dict(
+                user_data_dir=primary_user_data_dir,
+                headless=headless_mode,
+                channel=browser_channel,
+                args=[
+                    "--remote-debugging-port=9222",
+                    "--profile-directory=Default",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-infobars",
+                ],
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0"
+                ),
+                ignore_default_args=["--enable-automation"],
+            )
+
+            try:
+                context = await playwright.chromium.launch_persistent_context(**launch_kwargs)
+                logger.info("[BrowserManager] Successfully launched Personal Edge with remote debugging (port 9222).")
+            except Exception as e:
+                logger.error(f"[BrowserManager] Failed to launch Personal Edge profile: {e}")
                 try:
-                    yield page
-                finally:
+                    await playwright.stop()
+                except Exception:
+                    pass
+                raise e
+
+        # Store references
+        self._playwrights[user_id] = playwright
+        self._browsers[user_id] = browser
+        self._contexts[user_id] = context
+        self._tab_counts[user_id] = 0
+        logger.info(f"[BrowserManager] Personal Edge session context ready for user {user_id}")
+
+    async def ensure_context(self, user_id: str) -> BrowserContext:
+        """
+        Ensure a live context exists for the user. Thread-safe via per-user lock.
+        """
+        lock = self._get_lock(user_id)
+        async with lock:
+            if not await self._is_context_alive(user_id):
+                logger.info(f"[BrowserManager] No live context for user {user_id} — starting one.")
+                # Clean up any dead playwright/browser instance first
+                old_pw = self._playwrights.pop(user_id, None)
+                old_browser = self._browsers.pop(user_id, None)
+                old_cdp = self._cdp_sessions.pop(user_id, None)
+                self._contexts.pop(user_id, None)
+                if old_cdp:
                     try:
-                        await page.close()
+                        await old_cdp.detach()
                     except Exception:
                         pass
-        else:
-            async with self.semaphore:
-                # Find an available instance (sequential locking check)
-                selected_instance = None
-                for inst in self.instances:
-                    if not inst.lock.locked():
-                        selected_instance = inst
-                        break
-                
-                if not selected_instance:
-                    selected_instance = self.instances[0]
-
-                async with selected_instance.lock:
-                    if selected_instance.task_count >= 50 or not selected_instance.context:
-                        logger.info(f"Recycling Generic Browser Instance #{selected_instance.idx} (tasks run: {selected_instance.task_count})")
-                        await selected_instance.start()
-                    
-                    page = await selected_instance.get_page()
+                if old_browser:
                     try:
-                        yield page
-                    finally:
-                        try:
-                            await page.close()
-                        except Exception:
-                            pass
+                        await old_browser.close()
+                    except Exception:
+                        pass
+                if old_pw:
+                    try:
+                        await old_pw.stop()
+                    except Exception:
+                        pass
+                await self._start_context(user_id)
+            else:
+                logger.debug(f"[BrowserManager] Prevented duplicate browser launch for user {user_id}")
+        return self._contexts[user_id]
 
-    async def close_all(self):
-        """Shutdown all browser instances gracefully."""
-        logger.info("Closing all browser contexts in BrowserPoolManager...")
-        for inst in self.instances:
-            await inst.stop()
-        for inst in list(self.user_instances.values()):
-            await inst.stop()
-        self.instances = []
-        self.user_instances = {}
-        self._initialized = False
-
-class LoopBoundBrowserPoolProxy:
-    """A proxy that dynamically binds browser pools to the active event loop."""
-    def __init__(self):
-        import weakref
-        self._pools = weakref.WeakKeyDictionary()
-        self._default_pool = None
-
-    def _get_pool(self) -> BrowserPoolManager:
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            if self._default_pool is None:
-                self._default_pool = BrowserPoolManager()
-            return self._default_pool
-
-        if loop not in self._pools:
-            self._pools[loop] = BrowserPoolManager()
-        return self._pools[loop]
+    # ------------------------------------------------------------------ #
+    # Public API: acquire_page                                             #
+    # ------------------------------------------------------------------ #
 
     @asynccontextmanager
-    async def acquire_page(self, user_id: Optional[str] = None, headless: Optional[bool] = None):
-        pool = self._get_pool()
-        async with pool.acquire_page(user_id=user_id, headless=headless) as page:
-            yield page
+    async def acquire_page(
+        self,
+        user_id: Optional[str] = None,
+        headless: Optional[bool] = None,
+        platform: Optional[str] = None,
+    ):
+        """
+        Open or reuse a tab inside the user's persistent Edge session in the background.
+        """
+        if not user_id:
+            user_id = "__shared__"
+        if not platform:
+            platform = "generic"
 
-    async def close_current_loop_pool(self):
+        semaphore = self._get_semaphore(user_id)
+
+        async with semaphore:
+            context = await self.ensure_context(user_id)
+
+            r = redis_client.client
+            hash_key = f"automation:platform_tabs:{user_id}"
+            active_set_key = f"automation:active_tabs:{user_id}"
+
+            # 1. Check if a tab for this platform is already registered in Redis
+            target_id = r.hget(hash_key, platform)
+            if target_id:
+                # Verify if this target is still open in the browser context
+                page = await _find_page_by_target_id(context, target_id)
+                if page:
+                    logger.info(f"[TAB REUSED] Reusing existing {platform} tab (target: {target_id})")
+                    yield page
+                    return
+                else:
+                    logger.info(f"[TAB CLOSED] Registered {platform} tab (target: {target_id}) was closed. Cleaning up.")
+                    r.hdel(hash_key, platform)
+                    r.srem(active_set_key, target_id)
+
+            # 2. Wait until we are under the total active automation tabs limit (max 6 total)
+            while True:
+                active_targets = r.smembers(active_set_key)
+                real_active_targets = []
+                for t_id in active_targets:
+                    p = await _find_page_by_target_id(context, t_id)
+                    if p:
+                        real_active_targets.append(t_id)
+                    else:
+                        r.srem(active_set_key, t_id)
+                        # Remove from platform hash map too
+                        all_plats = r.hgetall(hash_key)
+                        for plat, tid in all_plats.items():
+                            if tid == t_id:
+                                r.hdel(hash_key, plat)
+
+                if len(real_active_targets) < 6:
+                    break
+
+                logger.info(f"[BrowserManager] Max 6 automation tabs limit reached (active: {len(real_active_targets)}). Waiting...")
+                await asyncio.sleep(2.0)
+
+            # 3. Create a new background page
+            self._tab_counts[user_id] = self._tab_counts.get(user_id, 0) + 1
+            tab_n = self._tab_counts[user_id]
+            logger.info(f"[TAB CREATED] Opening new background automation tab #{tab_n} for platform {platform}")
+
+            page = await create_background_page(context)
+            page.set_default_timeout(getattr(settings, "BROWSER_TIMEOUT_MS", 30000))
+            page.on("framenavigated", lambda frame: _on_navigation(frame, page))
+
+            try:
+                target_id = await _get_page_target_id(page)
+                r.hset(hash_key, platform, target_id)
+                r.sadd(active_set_key, target_id)
+                logger.info(f"[TAB CREATED] Registered new {platform} tab (target: {target_id})")
+            except Exception as e:
+                logger.error(f"[BrowserManager] Failed to register background tab: {e}")
+
+            try:
+                yield page
+            finally:
+                # Do NOT close platform-specific tabs, keep them registered & open for future tasks
+                logger.info(f"[BrowserManager] Finished execution on {platform} tab. Leaving open in background.")
+
+    # ------------------------------------------------------------------ #
+    # Cleanup (called by lifespan / shutdown)                              #
+    # ------------------------------------------------------------------ #
+
+    async def close_all(self) -> None:
+        """
+        Gracefully close all contexts. Called only on server shutdown.
+        Profiles are NOT deleted.
+        """
+        logger.info("[BrowserManager] Shutting down all browser sessions...")
+        for user_id, ctx in list(self._contexts.items()):
+            try:
+                await ctx.close()
+                logger.info(f"[BrowserManager] Closed session for user {user_id}")
+            except Exception as e:
+                logger.debug(f"[BrowserManager] Error closing context for {user_id}: {e}")
+
+        for user_id, browser in list(self._browsers.items()):
+            if browser:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+
+        for user_id, client in list(self._cdp_sessions.items()):
+            if client:
+                try:
+                    await client.detach()
+                except Exception:
+                    pass
+
+        for user_id, pw in list(self._playwrights.items()):
+            try:
+                await pw.stop()
+            except Exception:
+                pass
+
+        self._contexts.clear()
+        self._browsers.clear()
+        self._cdp_sessions.clear()
+        self._playwrights.clear()
+        self._tab_counts.clear()
+
+    async def close_user_session(self, user_id: str) -> None:
+        """
+        Close and restart a specific user's session (e.g., after forced logout).
+        Profile directory is preserved.
+        """
+        lock = self._get_lock(user_id)
+        async with lock:
+            ctx = self._contexts.pop(user_id, None)
+            browser = self._browsers.pop(user_id, None)
+            client = self._cdp_sessions.pop(user_id, None)
+            pw = self._playwrights.pop(user_id, None)
+            if ctx:
+                try:
+                    await ctx.close()
+                except Exception:
+                    pass
+            if client:
+                try:
+                    await client.detach()
+                except Exception:
+                    pass
+            if browser:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+            if pw:
+                try:
+                    await pw.stop()
+                except Exception:
+                    pass
+        logger.info(f"[BrowserManager] Session for user {user_id} closed (profile preserved).")
+
+
+# ---------------------------------------------------------------------------
+# Frame navigation hook — detects login redirects
+# ---------------------------------------------------------------------------
+
+def _on_navigation(frame, page: Page) -> None:
+    """
+    Called on every frame navigation. If we detect a login redirect,
+    we log a warning. Actual pause logic can be added in adapters.
+    """
+    try:
+        # Only track main frame
+        if frame != page.main_frame:
+            return
+        url = frame.url or ""
+        if _looks_like_login_page(url):
+            logger.warning(
+                f"[BrowserManager] Login required — waiting for user action. "
+                f"Detected login page: {url[:80]}"
+            )
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# LoopBoundBrowserSessionProxy
+# ---------------------------------------------------------------------------
+
+class LoopBoundBrowserSessionProxy:
+    """
+    Wraps BrowserSessionManager so that each asyncio event loop gets its
+    own instance (Celery workers each run their own loop).
+    Exposes the same acquire_page() API as the old LoopBoundBrowserPoolProxy.
+    """
+
+    def __init__(self):
+        import weakref
+        self._managers: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+        self._default_manager: Optional[BrowserSessionManager] = None
+
+    def _get_manager(self) -> BrowserSessionManager:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            return
-        if loop in self._pools:
-            pool = self._pools.pop(loop)
-            await pool.close_all()
+            if self._default_manager is None:
+                self._default_manager = BrowserSessionManager()
+            return self._default_manager
 
-    async def close_all(self):
-        for pool in list(self._pools.values()):
+        if loop not in self._managers:
+            self._managers[loop] = BrowserSessionManager()
+        return self._managers[loop]
+
+    @asynccontextmanager
+    async def acquire_page(
+        self,
+        user_id: Optional[str] = None,
+        headless: Optional[bool] = None,
+        platform: Optional[str] = None,
+    ):
+        manager = self._get_manager()
+        async with manager.acquire_page(user_id=user_id, headless=headless, platform=platform) as page:
+            yield page
+
+    async def close_all(self) -> None:
+        for mgr in list(self._managers.values()):
             try:
-                await pool.close_all()
+                await mgr.close_all()
             except Exception:
                 pass
-        if self._default_pool:
+        if self._default_manager:
             try:
-                await self._default_pool.close_all()
+                await self._default_manager.close_all()
             except Exception:
                 pass
 
-# Global Browser Pool Proxy Instance
-browser_pool = LoopBoundBrowserPoolProxy()
+    async def close_user_session(self, user_id: str) -> None:
+        manager = self._get_manager()
+        await manager.close_user_session(user_id)
+
+    async def close_current_loop_pool(self) -> None:
+        """Backward-compat alias used by lifespan handlers."""
+        await self.close_all()
+
+
+# ---------------------------------------------------------------------------
+# Global instance — drop-in replacement for old `browser_pool`
+# ---------------------------------------------------------------------------
+
+browser_pool = LoopBoundBrowserSessionProxy()

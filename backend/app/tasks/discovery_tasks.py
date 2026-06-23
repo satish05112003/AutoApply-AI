@@ -21,6 +21,74 @@ import app.crawlers.ashby_crawler
 import app.crawlers.greenhouse_crawler
 import app.crawlers.lever_crawler
 
+# ---------------------------------------------------------------------------
+# Prioritization engine constants and functions
+# ---------------------------------------------------------------------------
+
+def get_role_tier(title: str) -> int:
+    """
+    Tier 1: Embedded Systems Engineer, Embedded Software Engineer, Firmware Engineer, Embedded Linux Engineer, Device Driver Engineer
+    Tier 2: Electronics Engineer, Hardware Engineer, Validation Engineer
+    Tier 3: Software Engineer, SDE, Backend Engineer, Python Developer
+    Tier 4: AI Engineer, ML Engineer, Generative AI Engineer, LLM Engineer
+    Tier 5: Full Stack Engineer, Data Engineer
+    """
+    t_lower = (title or "").lower()
+    # Tier 1
+    if any(p in t_lower for p in ["embedded systems", "embedded software", "firmware", "embedded linux", "device driver"]):
+        return 1
+    # Tier 2
+    if any(p in t_lower for p in ["electronics", "hardware", "validation"]):
+        return 2
+    # Tier 3
+    if any(p in t_lower for p in ["software engineer", "sde", "backend engineer", "python developer"]):
+        return 3
+    # Tier 4
+    if any(p in t_lower for p in ["ai engineer", "ml engineer", "machine learning", "generative ai", "llm engineer"]):
+        return 4
+    # Tier 5
+    if any(p in t_lower for p in ["full stack", "fullstack", "data engineer"]):
+        return 5
+    return 6  # fallback/lowest priority
+
+def get_location_score(location: str) -> int:
+    """
+    Bangalore = +30, Hyderabad = +25, Chennai = +20, Pune = +15, others
+    """
+    if not location:
+        return 0
+    loc_lower = location.lower()
+    score = 0
+    if "bangalore" in loc_lower or "bengaluru" in loc_lower:
+        score += 30
+    elif "hyderabad" in loc_lower:
+        score += 25
+    elif "chennai" in loc_lower:
+        score += 20
+    elif "pune" in loc_lower:
+        score += 15
+    elif "mumbai" in loc_lower:
+        score += 10
+    elif "gurgaon" in loc_lower or "gurugram" in loc_lower:
+        score += 5
+    elif "noida" in loc_lower:
+        score += 5
+        
+    if "remote" in loc_lower:
+        score += 10
+    return score
+
+SOURCE_PRIORITY = {
+    "linkedin": 1,
+    "naukri": 2,
+    "indeed": 3,
+    "unstop": 4,
+    "greenhouse": 5,
+    "lever": 6,
+    "ashby": 7,
+    "company": 8
+}
+
 try:
     # Get active celery app
     from app.celery_app import celery_app
@@ -52,6 +120,14 @@ async def _async_orchestrate_job_task(user_id: str, job_id: str) -> str:
     loop = asyncio.get_running_loop()
     task_id = current_task.request.id if current_task and current_task.request else "sync"
     worker_id = current_task.request.hostname if current_task and current_task.request else "sync"
+
+    # ── Automation Guard ────────────────────────────────────────────────────
+    from app.automation_state import is_automation_enabled
+    if not is_automation_enabled():
+        msg = f"[AutomationGuard] orchestrate_job_task BLOCKED — automation engine is OFF. user={user_id} job={job_id}"
+        logger.info(msg)
+        return msg
+    # ────────────────────────────────────────────────────────────────────────
 
     from app.agents.orchestrator import AgentOrchestrator
     try:
@@ -97,6 +173,14 @@ async def _async_run_job_discovery(source_name: str, query: str, location: Optio
     loop = asyncio.get_running_loop()
     task_id = current_task.request.id if current_task and current_task.request else "sync"
     worker_id = current_task.request.hostname if current_task and current_task.request else "sync"
+
+    # ── Automation Guard ────────────────────────────────────────────────────
+    from app.automation_state import is_automation_enabled
+    if not is_automation_enabled():
+        msg = f"[AutomationGuard] run_job_discovery BLOCKED — automation engine is OFF. source={source_name} query={query}"
+        logger.info(msg)
+        return msg
+    # ────────────────────────────────────────────────────────────────────────
 
     logger.info(
         f"Starting Celery discovery task: source={source_name}, query={query} "
@@ -166,6 +250,13 @@ async def _async_run_job_discovery(source_name: str, query: str, location: Optio
                     res_users = await db.execute(stmt_users)
                     active_users = res_users.scalars().all()
                     
+                    # Sort new_jobs by priority: Role Tier (asc), Location Score (desc), Source Priority (asc)
+                    new_jobs.sort(key=lambda j: (
+                        get_role_tier(j.role_title),
+                        -get_location_score(j.location),
+                        SOURCE_PRIORITY.get(j.source.lower(), 9)
+                    ))
+
                     # Delegate slow orchestration to background tasks
                     for job in new_jobs:
                         for active_user in active_users:
@@ -278,6 +369,14 @@ async def _async_scheduled_discover_jobs() -> str:
     task_id = current_task.request.id if current_task and current_task.request else "sync"
     worker_id = current_task.request.hostname if current_task and current_task.request else "sync"
 
+    # ── Automation Guard ────────────────────────────────────────────────────
+    from app.automation_state import is_automation_enabled
+    if not is_automation_enabled():
+        msg = "[AutomationGuard] scheduled_discover_jobs BLOCKED — automation engine is OFF. System is idle."
+        logger.info(msg)
+        return msg
+    # ────────────────────────────────────────────────────────────────────────
+
     logger.info(f"scheduled_discover_jobs: Triggering discovery pass. task={task_id} worker={worker_id} loop={id(loop)}")
     
     from app.models.auth import User
@@ -377,7 +476,14 @@ async def _async_scheduled_discover_jobs() -> str:
                         params = config["params"]
                         unique_crawls[(source, role, loc)] = params
                 
-                for (source, role, loc), params in unique_crawls.items():
+                # Sort unique crawls by role tier and source priority so higher priority runs first
+                sorted_crawls = list(unique_crawls.items())
+                sorted_crawls.sort(key=lambda item: (
+                    get_role_tier(item[0][1]), # query/role is item[0][1]
+                    SOURCE_PRIORITY.get(item[0][0].lower(), 9) # source is item[0][0]
+                ))
+
+                for (source, role, loc), params in sorted_crawls:
                     redis_key = f"last_crawl:{source}:{role}:{loc}"
                     if redis_client.get_value(redis_key):
                         logger.info(f"Skipping crawl for {source}:{role}:{loc} - already crawled recently.")

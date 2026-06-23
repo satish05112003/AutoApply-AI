@@ -28,11 +28,18 @@ async def _async_monitor_gmail_inbox() -> str:
     task_id = current_task.request.id if current_task and current_task.request else "sync"
     worker_id = current_task.request.hostname if current_task and current_task.request else "sync"
     
+    # ── Automation Guard ────────────────────────────────────────────────────
+    from app.automation_state import is_automation_enabled
+    if not is_automation_enabled():
+        return "[AutomationGuard] monitor_gmail_inbox BLOCKED — automation engine is OFF."
+    # ────────────────────────────────────────────────────────────────────────
+
     logger.info(f"Starting scheduled email monitoring check. task={task_id} worker={worker_id} loop={id(loop)}")
     
     from app.models.auth import User
     from app.models.profile import Preferences
     from sqlalchemy import select
+
     
     try:
         async with SessionLocal() as db:
